@@ -9,15 +9,7 @@ from matplotlib import cm
 from matplotlib import colors
 from scipy.stats import binned_statistic
 from pathlib import Path
-
-reload_ = False
-N = 256
-sd_len = 2*np.pi # domain size
-Dx = sd_len / N
-Dt = 0.1 * Dx
-T = 2000
-Re = 50000
-ekman = 0.00002
+from po2d_config import *
 
 @cache
 def coordinates():
@@ -29,14 +21,14 @@ def open_folders():
     result_fold = Path().resolve().parent / 'Results'
     if not result_fold.exists():
         result_fold.mkdir()
-    frames_fold = result_fold / f'frames_trial{N}'
+    frames_fold = result_fold / f'frames_{cfg_name}{N}'
     if not frames_fold.exists():
         frames_fold.mkdir()
     else:
         if not reload_:
             for img in frames_fold.iterdir():
                 img.unlink()
-    bak_fold = result_fold / f'trial{N}'
+    bak_fold = result_fold / f'{cfg_name}{N}'
     if not bak_fold.exists():
         bak_fold.mkdir()
     return frames_fold, bak_fold
