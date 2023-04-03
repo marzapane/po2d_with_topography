@@ -66,8 +66,8 @@ def contour_plot(
     plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
     if label != '':
         if t >= 0:
-            # plt.title(f'{label}  |  t={(t*Dt):.3f}')
-            plt.title(f'{label}  |  t={(t*Dt + 5792.311):.3f}') # to correct different Dts
+            plt.title(f'{label}  |  t={(t*Dt):.3f}')
+            # plt.title(f'{label}  |  t={(t*Dt + 5792.311):.3f}') # to correct different Dts
         else:
             plt.title(f'{label}')
     else:
@@ -122,14 +122,14 @@ def forcing_spectrum(
     k_F: float,
 ):
     k = modulus_k(N)
-    f = strength * 10e6 * np.logical_and(k_F-1 < k, k < k_F+1)
-    # f = strength * 10e6 * np.logical_and(k_F-1.5 < k, k < k_F+1.5)
+    # f = strength * 10e6 * np.logical_and(k_F-1 < k, k < k_F+1)
+    f = strength * 10e6 * np.logical_and(k_F-1.5 < k, k < k_F+1.5)
     return np.sqrt(k * f / np.pi)
 
 def random_forcing(
     strength = 0.1,
-    k_F = N / 8,
-    # k_F = N * 25/128,
+    # k_F = N / 8,
+    k_F = N * 25/128,
 ):
     power_spectrum = forcing_spectrum(strength, k_F)
     random_phase = np.random.rand(N,int(N/2)+1)
@@ -318,8 +318,11 @@ def time_iter(
         L[i] = linear_sys_inv(c[i], d[i])
 
     frames_folder, bak_folder = open_folders()
-    stat_file = open(bak_folder / 'time_stat.dat', 'a')
-    print('# time E eps avg_k', file=stat_file)
+    if reload_:
+        stat_file = open(bak_folder / 'time_stat.dat', 'a')
+    else:
+        stat_file = open(bak_folder / 'time_stat.dat', 'w')
+        print('# time E eps avg_k', file=stat_file)
     max_dist = int(N/2 * np.sqrt(2)) # maximum distance from the domain center
     bkgnd_sum = np.zeros(max_dist)
     bins = np.arange(max_dist+1) * Dx
@@ -335,14 +338,15 @@ def time_iter(
         F = forcing()
         for i in range(3):
             q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F)
+        v_x, v_y = velocity(psi)
         if t%T_update == 0:
-            v_x, v_y = velocity(psi)
             E = energy(q, psi)
             eps = energy_input(F, psi)
             S = spectrum(q)
             avg_k = np.average(np.arange(S.size), weights=S)
             time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {eps:.5g} ')
-            print(t*Dt + 5792.311, E, eps, avg_k, sep='\t', file=stat_file)
+            print(t*Dt, E, eps, avg_k, sep='\t', file=stat_file)
+            # print(t*Dt + 5792.311, E, eps, avg_k, sep='\t', file=stat_file)
         if t%T_print == 0:
             contour_plot(q, frames_folder, t, 'Vorticity')
             np.save(bak_folder / f'q_{t:06}', q)
