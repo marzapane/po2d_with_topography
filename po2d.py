@@ -9,7 +9,9 @@ from matplotlib import cm
 from matplotlib import colors
 from scipy.stats import binned_statistic
 from pathlib import Path
+
 from po2d_config import *
+reload_bak = True
 
 @cache
 def coordinates():
@@ -21,16 +23,24 @@ def open_folders():
     result_fold = Path().resolve().parent / 'Results'
     if not result_fold.exists():
         result_fold.mkdir()
-    frames_fold = result_fold / f'frames_{cfg_name}{N}'
+    if cfg_name != '':
+        fold_name = f'{cfg_name},Ek{ekman:.1e},Re{Re:.0e},N{N}'
+    else:
+        fold_name = f'Ek{ekman:.1e},Re{Re:.0e},N{N}'
+    frames_fold = result_fold / f'frames_{fold_name}'
     if not frames_fold.exists():
         frames_fold.mkdir()
     else:
-        if not reload_:
+        if not reload_bak:
             for img in frames_fold.iterdir():
                 img.unlink()
-    bak_fold = result_fold / f'{cfg_name}{N}'
+    bak_fold = result_fold / fold_name
     if not bak_fold.exists():
         bak_fold.mkdir()
+    else:
+        if not reload_bak:
+            for bak_file in bak_fold.iterdir():
+                back_file.unlink()
     return frames_fold, bak_fold
 
 def find_highest_numbered_file(path):
@@ -47,6 +57,7 @@ def find_highest_numbered_file(path):
             if file_number > max_number:
                 max_number = file_number
                 max_file = file.name
+    print(f'Reading last backup from {max_file}')
     return max_file, max_number
 
 def contour_plot(
@@ -292,7 +303,7 @@ def rungekutta_step(
     J,
     F,
 ):
-    J_p = J
+    J_p = J.copy()
     J = arakawa_jacobian(q, psi)
     rhs = Dt*((gamma+rho)*F - (gamma*J + rho*J_p)) - d*q + c*pseudo_laplacian2d(q)
     middle_step = np.matmul(L, rhs)
@@ -318,7 +329,7 @@ def time_iter(
         L[i] = linear_sys_inv(c[i], d[i])
 
     frames_folder, bak_folder = open_folders()
-    if reload_:
+    if reload_bak:
         stat_file = open(bak_folder / 'time_stat.dat', 'a')
     else:
         stat_file = open(bak_folder / 'time_stat.dat', 'w')
@@ -327,47 +338,54 @@ def time_iter(
     bkgnd_sum = np.zeros(max_dist)
     bins = np.arange(max_dist+1) * Dx
     F = forcing()
-    eps = 0.02878
     revol_time = pow(sd_len**2/(2*eps), 1/3)
     T_print = min(int(revol_time/Dt), int(T/5))
     T_update = max(10, int(T/1000))
-    print(f'{T_print=}\t{T/T_print} elements for statistics')
+    print(f'Dt = {Dt}\nT_LE ~ {revol_time}')
     time_exec = tqdm(np.arange(t0+1, T+t0+2))
 
     for t in time_exec:
         F = forcing()
         for i in range(3):
             q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F)
-        v_x, v_y = velocity(psi)
+        # v_x, v_y = velocity(psi)
         if t%T_update == 0:
             E = energy(q, psi)
-            eps = energy_input(F, psi)
+            E_in = energy_input(F, psi)
             S = spectrum(q)
             avg_k = np.average(np.arange(S.size), weights=S)
-            time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {eps:.5g} ')
-            print(t*Dt, E, eps, avg_k, sep='\t', file=stat_file)
-            # print(t*Dt + 5792.311, E, eps, avg_k, sep='\t', file=stat_file)
+            time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {E_in:.5g} ')
+            print(t*Dt, E, E_in*T_update, avg_k, sep='\t', file=stat_file, flush=True)
+            # print(t*Dt + 5792.311, E, E_in, avg_k, sep='\t', file=stat_file, flush=True)
         if t%T_print == 0:
             contour_plot(q, frames_folder, t, 'Vorticity')
             np.save(bak_folder / f'q_{t:06}', q)
-        bkgnd_sum = bkgnd_sum + avg_centered_field(q, v_x, v_y, bins) + avg_centered_field(-q, -v_x, -v_y, bins)
+        # bkgnd_sum = bkgnd_sum + avg_centered_field(q, v_x, v_y, bins) + avg_centered_field(-q, -v_x, -v_y, bins)
         
     stat_file.close()
     bkgnd = bkgnd_sum / (2 * (T + 1))
     np.save(bak_folder / f'bkgnd', np.array((bins[:-1], bkgnd)))
 
 def main():
-    if reload_:
-        _, bak_folder = open_folders()
-        bak_file, t0 = find_highest_numbered_file(bak_folder)
-        if bak_file:
-            q = np.load(bak_folder / bak_file)
+    _, bak_folder = open_folders()
+    bak_file, t0 = find_highest_numbered_file(bak_folder)
+    if bak_file:
+        print('A previous simulation has been found; starting a different one will overwrite it.')
+        user_input = input('Reload last simulation? [Y/n]')
+        if user_input.lower() in ['no', 'n']:
+            print('Launching a new simulation and overwriting the past one.')
+            reload_bak = False
+            q = psi = J = np.zeros((N, N))
+            time_iter(q, psi, J, random_forcing)
         else:
-            raise Exception('Error: no valid backup file found.')
-        psi = inv_laplacian2d(q)
-        J = arakawa_jacobian(q, psi)
-        time_iter(q, psi, J, random_forcing, t0)
+            print(f'Restarting past simulation from {t0=}')
+            q = np.load(bak_folder / bak_file)
+            psi = inv_laplacian2d(q)
+            J = arakawa_jacobian(q, psi)
+            time_iter(q, psi, J, random_forcing, t0)
     else:
+        print('No previous simulation was found; launching a new one.')
+        reload_bak = False
         q = psi = J = np.zeros((N, N))
         time_iter(q, psi, J, random_forcing)
 
