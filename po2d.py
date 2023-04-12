@@ -57,7 +57,6 @@ def find_highest_numbered_file(path):
             if file_number > max_number:
                 max_number = file_number
                 max_file = file.name
-    print(f'Reading last backup from {max_file}')
     return max_file, max_number
 
 def contour_plot(
@@ -78,7 +77,6 @@ def contour_plot(
     if label != '':
         if t >= 0:
             plt.title(f'{label}  |  t={(t*Dt):.3f}')
-            # plt.title(f'{label}  |  t={(t*Dt + 5792.311):.3f}') # to correct different Dts
         else:
             plt.title(f'{label}')
     else:
@@ -132,9 +130,13 @@ def forcing_spectrum(
     strength: float,
     k_F: float,
 ):
+    band_size = 3
+    # band_size = 2
+    band_max = k_F + band_size/2
+    band_min = k_F - band_size/2
     k = modulus_k(N)
-    # f = strength * 10e6 * np.logical_and(k_F-1 < k, k < k_F+1)
-    f = strength * 10e6 * np.logical_and(k_F-1.5 < k, k < k_F+1.5)
+    
+    f = strength * 10e6 * np.logical_and(band_min < k, k < band_max)
     return np.sqrt(k * f / np.pi)
 
 def random_forcing(
@@ -248,6 +250,13 @@ def inv_laplacian2d(
     psi_ft = omega_ft / laplacian_eig(omega_ft.shape)
     return ft.irfft2(psi_ft)
 
+def inv_laplacian_topography(
+    q,
+    h,
+):
+    omega = h * q
+    return inv_laplacian2d(omega)
+
 def avg_coord( # averaging in the square domain [a, b]^2
     f, # weights
     a = 0,
@@ -341,7 +350,7 @@ def time_iter(
     revol_time = pow(sd_len**2/(2*eps), 1/3)
     T_print = min(int(revol_time/Dt), int(T/5))
     T_update = max(10, int(T/1000))
-    print(f'Dt = {Dt}\nT_LE ~ {revol_time}')
+    print(f'Simulation times are:\n  Dt = {Dt}\n  T_LE ~ {revol_time}')
     time_exec = tqdm(np.arange(t0+1, T+t0+2))
 
     for t in time_exec:
@@ -356,7 +365,6 @@ def time_iter(
             avg_k = np.average(np.arange(S.size), weights=S)
             time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {E_in:.5g} ')
             print(t*Dt, E, E_in*T_update, avg_k, sep='\t', file=stat_file, flush=True)
-            # print(t*Dt + 5792.311, E, E_in, avg_k, sep='\t', file=stat_file, flush=True)
         if t%T_print == 0:
             contour_plot(q, frames_folder, t, 'Vorticity')
             np.save(bak_folder / f'q_{t:06}', q)
@@ -367,25 +375,28 @@ def time_iter(
     np.save(bak_folder / f'bkgnd', np.array((bins[:-1], bkgnd)))
 
 def main():
-    _, bak_folder = open_folders()
+    _, bak_folder = open_folders() # looking for past simulations backup files
     bak_file, t0 = find_highest_numbered_file(bak_folder)
-    if bak_file:
-        print('A previous simulation has been found; starting a different one will overwrite it.')
-        user_input = input('Reload last simulation? [Y/n]')
+    if bak_file: # asking user confirmation to reload last simulation (default)
+        print(f'A previous simulation has been found: {bak_file}.')
+        print('Starting a different one will overwrite it.')
+        user_input = input('  Reload last simulation? [Y/n]')
         if user_input.lower() in ['no', 'n']:
             print('Launching a new simulation and overwriting the past one.')
             reload_bak = False
-            q = psi = J = np.zeros((N, N))
-            time_iter(q, psi, J, random_forcing)
         else:
-            print(f'Restarting past simulation from {t0=}')
-            q = np.load(bak_folder / bak_file)
-            psi = inv_laplacian2d(q)
-            J = arakawa_jacobian(q, psi)
-            time_iter(q, psi, J, random_forcing, t0)
+            print(f'Restarting past simulation from {t0=}.')
+            reload_bak = True
     else:
         print('No previous simulation was found; launching a new one.')
         reload_bak = False
+
+    if reload_bak:
+        q = np.load(bak_folder / bak_file)
+        psi = inv_laplacian2d(q)
+        J = arakawa_jacobian(q, psi)
+        time_iter(q, psi, J, random_forcing, t0)
+    else:
         q = psi = J = np.zeros((N, N))
         time_iter(q, psi, J, random_forcing)
 
