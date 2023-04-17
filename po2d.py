@@ -12,6 +12,7 @@ from pathlib import Path
 
 from po2d_config import *
 reload_bak = True
+h = np.ones((N,N))
 
 @cache
 def coordinates():
@@ -141,8 +142,8 @@ def forcing_spectrum(
 
 def random_forcing(
     strength = 0.1,
-    # k_F = N / 8,
     k_F = N * 25/128,
+    # k_F = N / 8,
 ):
     power_spectrum = forcing_spectrum(strength, k_F)
     random_phase = np.random.rand(N,int(N/2)+1)
@@ -252,7 +253,7 @@ def inv_laplacian2d(
 
 def inv_laplacian_topography(
     q,
-    h,
+    # h,
 ):
     omega = h * q
     return inv_laplacian2d(omega)
@@ -311,6 +312,7 @@ def rungekutta_step(
     psi,
     J,
     F,
+    streamfunction = inv_laplacian2d,
 ):
     J_p = J.copy()
     J = arakawa_jacobian(q, psi)
@@ -318,7 +320,7 @@ def rungekutta_step(
     middle_step = np.matmul(L, rhs)
     Dq = np.matmul(middle_step, L.transpose())
     q = q + Dq
-    psi = inv_laplacian2d(q)
+    psi = streamfunction(q)
     return q, psi, J
 
 def time_iter(
@@ -327,6 +329,7 @@ def time_iter(
     J,
     forcing: callable,
     t0 = -1,
+    streamfunction = inv_laplacian2d,
 ):
     gamma = np.array((8/15, 5/12, 3/4))
     rho = np.array((0, -17/60, -5/12))
@@ -356,7 +359,7 @@ def time_iter(
     for t in time_exec:
         F = forcing()
         for i in range(3):
-            q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F)
+            q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F, streamfunction)
         # v_x, v_y = velocity(psi)
         if t%T_update == 0:
             E = energy(q, psi)
