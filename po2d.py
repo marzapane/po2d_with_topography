@@ -8,17 +8,29 @@ from tqdm import tqdm
 from matplotlib import cm
 from matplotlib import colors
 from scipy.stats import binned_statistic
+from scipy.ndimage import gaussian_filter
 from pathlib import Path
 
 from po2d_config import *
 reload_bak = True
 h = np.ones((N,N))
 
+
 @cache
 def coordinates():
     x = np.arange(0, N) * Dx
     y = np.arange(0, N) * Dx
     return np.meshgrid(x, y, indexing='ij')
+
+def steup_folder(
+    folder,
+):
+    if folder.exists():
+        if not reload_bak:
+            for file in folder.iterdir():
+                file.unlink()
+    else:
+        folder.mkdir()
 
 def open_folders():
     result_fold = Path().resolve().parent / 'Results'
@@ -28,20 +40,10 @@ def open_folders():
         fold_name = f'{cfg_name},Ek{ekman:.1e},Re{Re:.0e},N{N}'
     else:
         fold_name = f'Ek{ekman:.1e},Re{Re:.0e},N{N}'
-    frames_fold = result_fold / f'frames_{fold_name}'
-    if not frames_fold.exists():
-        frames_fold.mkdir()
-    else:
-        if not reload_bak:
-            for img in frames_fold.iterdir():
-                img.unlink()
     bak_fold = result_fold / fold_name
-    if not bak_fold.exists():
-        bak_fold.mkdir()
-    else:
-        if not reload_bak:
-            for bak_file in bak_fold.iterdir():
-                back_file.unlink()
+    steup_folder(bak_fold)
+    frames_fold = result_fold / f'frames_{fold_name}'
+    steup_folder(frames_fold)
     return frames_fold, bak_fold
 
 def find_highest_numbered_file(path):
@@ -92,8 +94,9 @@ def relative_pos(
     y_ctr,
 ):
     pos = np.arange(N) * Dx
-    x_dist = (pos - x_ctr + np.pi) % (2*np.pi) - np.pi
-    y_dist = (pos - y_ctr + np.pi) % (2*np.pi) - np.pi
+    ctr = sd_len/2
+    x_dist = (pos - x_ctr + ctr) % sd_len - ctr
+    y_dist = (pos - y_ctr + ctr) % sd_len - ctr
     dist2ctr = np.sqrt(np.square(x_dist)[:, None] + np.square(y_dist)[None, :])
     angle = np.arctan2(y_dist[None, :], x_dist[:, None])
     return dist2ctr, angle
@@ -268,15 +271,40 @@ def avg_coord( # averaging in the square domain [a, b]^2
     avg_y = np.average(y[a:b, a:b], weights=f[a:b, a:b])
     return avg_x, avg_y
 
+def zero_coord( # finding combined zeros in the square domain [a, b]^2
+    f_x,
+    f_y,
+    a = 0,
+    b = N,
+):
+    coor = np.arange(a, b-1)
+    (X, Y) = np.meshgrid(coor, coor, indexing='ij')
+    is_zero_fx_y = f_x[a:b, a:b-1] * f_x[a:b, a+1:b] <= 0
+    is_zero_fy_x = f_y[a:b-1, a:b] * f_y[a+1:b, a:b] <= 0
+    is_zero_f = np.logical_and(np.logical_or(is_zero_fx_y[0:-1, :], is_zero_fx_y[1:, :]), np.logical_or(is_zero_fy_x[:, 0:-1], is_zero_fy_x[:, 1:]))
+    (zero_x, zero_y) = (0.,0.)
+    count = 0
+    for x, y in zip(X[is_zero_f], Y[is_zero_f]):
+        (zero_x, zero_y) = (zero_x + x+0.5, zero_y + y+0.5)
+        count = count + 1
+    if count != 0:
+        return zero_x/count, zero_y/count
+    else:
+        return (a+b)/2, (a+b)/2
+
 def find_vortex_center(
     q,
+    v_x,
+    v_y,
 ):
     ctr = int(N/2)
-    hr = int(N/32) # half range
-    (x_max, y_max) = np.unravel_index(q.argmax(), q.shape)
-    max_ctr_q = np.roll(np.roll(q, ctr-x_max, axis=0), ctr-y_max, axis=1) # to bring the max in the position (N/2, N/2)
-    avg_max_ctr_q = avg_coord(max_ctr_q, ctr-hr, ctr+hr)
-    pos_ctr = avg_max_ctr_q + (np.array([x_max, y_max])-ctr) *Dx # revert reference frame change
+    hr = int(N/16) # half range
+    q_flt = gaussian_filter(q, sigma=256/25, truncate=2., mode='wrap') # gaussian convolution not to pick a large fluctuation
+    (x_max, y_max) = np.unravel_index(q_flt.argmax(), q_flt.shape) # find max point
+    max_ctr_v_x = np.roll(np.roll(v_x, ctr-x_max, axis=0), ctr-y_max, axis=1) # to bring the max in the position (N/2, N/2)
+    max_ctr_v_y = np.roll(np.roll(v_y, ctr-x_max, axis=0), ctr-y_max, axis=1) # to bring the max in the position (N/2, N/2)
+    zero_max_ctr_v = zero_coord(max_ctr_v_x, max_ctr_v_y, ctr-hr, ctr+hr) # find max as zero of the volity vetor field
+    pos_ctr = (zero_max_ctr_v + np.array([x_max, y_max])-ctr)%N *Dx # revert reference frame change
     return pos_ctr
 
 def avg_vorticity(
@@ -297,7 +325,7 @@ def avg_centered_field(
     v_y,
     bins,
 ):
-    dist, angle = relative_pos(*find_vortex_center(q))
+    dist, angle = relative_pos(*find_vortex_center(q, v_x, v_y))
     omega = avg_vorticity(v_x, v_y, dist, angle)
     avg_omega, _, _ = binned_statistic(dist.flatten(), omega.flatten(), statistic='mean', bins=bins)
     return avg_omega
@@ -312,11 +340,14 @@ def rungekutta_step(
     psi,
     J,
     F,
+    forcing: callable,
     streamfunction = inv_laplacian2d,
 ):
     J_p = J.copy()
+    F_p = F.copy()
+    F = forcing()
     J = arakawa_jacobian(q, psi)
-    rhs = Dt*((gamma+rho)*F - (gamma*J + rho*J_p)) - d*q + c*pseudo_laplacian2d(q)
+    rhs = Dt*((gamma*F + rho*F_p) - (gamma*J + rho*J_p)) - d*q + c*pseudo_laplacian2d(q)
     middle_step = np.matmul(L, rhs)
     Dq = np.matmul(middle_step, L.transpose())
     q = q + Dq
@@ -346,9 +377,11 @@ def time_iter(
     else:
         stat_file = open(bak_folder / 'time_stat.dat', 'w')
         print('# time E eps avg_k', file=stat_file)
-    max_dist = int(N/2 * np.sqrt(2)) # maximum distance from the domain center
-    bkgnd_sum = np.zeros(max_dist)
-    bins = np.arange(max_dist+1) * Dx
+        
+    # max_dist = int(N/2 * np.sqrt(2)) # maximum distance from the domain center
+    # bkgnd_sum = np.zeros(max_dist)
+    # bins = np.arange(max_dist+1) * Dx
+    
     F = forcing()
     revol_time = pow(sd_len**2/(2*eps), 1/3)
     T_print = min(int(revol_time/Dt), int(T/5))
@@ -357,10 +390,10 @@ def time_iter(
     time_exec = tqdm(np.arange(t0+1, T+t0+2))
 
     for t in time_exec:
-        F = forcing()
         for i in range(3):
-            q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F, streamfunction)
-        # v_x, v_y = velocity(psi)
+            q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F, forcing, streamfunction)
+        # (v_x, v_y) = velocity(psi)
+        # bkgnd_sum = bkgnd_sum + avg_centered_field(q, v_x, v_y, bins) + avg_centered_field(-q, -v_x, -v_y, bins)
         if t%T_update == 0:
             E = energy(q, psi)
             E_in = energy_input(F, psi)
@@ -371,13 +404,13 @@ def time_iter(
         if t%T_print == 0:
             contour_plot(q, frames_folder, t, 'Vorticity')
             np.save(bak_folder / f'q_{t:06}', q)
-        # bkgnd_sum = bkgnd_sum + avg_centered_field(q, v_x, v_y, bins) + avg_centered_field(-q, -v_x, -v_y, bins)
         
     stat_file.close()
-    bkgnd = bkgnd_sum / (2 * (T + 1))
-    np.save(bak_folder / f'bkgnd', np.array((bins[:-1], bkgnd)))
+    # bkgnd = bkgnd_sum / (2 * (T + 1))
+    # np.save(bak_folder / f'bkgnd', np.array((bins[:-1], bkgnd)))
 
 def main():
+    global reload_bak
     _, bak_folder = open_folders() # looking for past simulations backup files
     bak_file, t0 = find_highest_numbered_file(bak_folder)
     if bak_file: # asking user confirmation to reload last simulation (default)
