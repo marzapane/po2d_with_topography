@@ -12,7 +12,7 @@ from scipy.ndimage import gaussian_filter
 from pathlib import Path
 
 from po2d_config import *
-reload_bak = True
+analize_vortex = False
 h = np.ones((N,N))
 
 
@@ -22,8 +22,10 @@ def coordinates():
     y = np.arange(0, N) * Dx
     return np.meshgrid(x, y, indexing='ij')
 
+
 def steup_folder(
     folder,
+    reload_bak = True,
 ):
     if folder.exists():
         if not reload_bak:
@@ -32,7 +34,10 @@ def steup_folder(
     else:
         folder.mkdir()
 
-def open_folders():
+
+def open_folders(
+    reload_bak = True,
+):
     result_fold = Path().resolve().parent / 'Results'
     if not result_fold.exists():
         result_fold.mkdir()
@@ -41,10 +46,11 @@ def open_folders():
     else:
         fold_name = f'Ek{ekman:.1e},Re{Re:.0e},N{N}'
     bak_fold = result_fold / fold_name
-    steup_folder(bak_fold)
+    steup_folder(bak_fold, reload_bak)
     frames_fold = result_fold / f'frames_{fold_name}'
-    steup_folder(frames_fold)
+    steup_folder(frames_fold, reload_bak)
     return frames_fold, bak_fold
+
 
 def find_highest_numbered_file(path):
     max_number = -1
@@ -61,6 +67,7 @@ def find_highest_numbered_file(path):
                 max_number = file_number
                 max_file = file.name
     return max_file, max_number
+
 
 def contour_plot(
     v,
@@ -89,6 +96,7 @@ def contour_plot(
     plt.savefig(frames_folder / f'{t:05}.png', dpi=200)#
     plt.close()
 
+
 def relative_pos(
     x_ctr,
     y_ctr,
@@ -100,6 +108,7 @@ def relative_pos(
     dist2ctr = np.sqrt(np.square(x_dist)[:, None] + np.square(y_dist)[None, :])
     angle = np.arctan2(y_dist[None, :], x_dist[:, None])
     return dist2ctr, angle
+
 
 def lamb_dipole(
     orient = np.pi/2,
@@ -117,8 +126,11 @@ def lamb_dipole(
     dipole[dist2ctr > radius] = 0
     return dipole
 
+
+@cache
 def zero_forcing():
     return np.zeros((N, N))
+
 
 @cache
 def modulus_k(
@@ -128,6 +140,7 @@ def modulus_k(
     mod_k = np.sqrt(square_sum)
     mod_k[int(n/2)+1:n, :] = mod_k[n-int(n/2)-1:0:-1, :]
     return mod_k
+
 
 @cache
 def forcing_spectrum(
@@ -143,15 +156,17 @@ def forcing_spectrum(
     f = strength * 10e6 * np.logical_and(band_min < k, k < band_max)
     return np.sqrt(k * f / np.pi)
 
+
 def random_forcing(
-    strength = 0.1,
+    strength = 1.e-3,
     k_F = N * 25/128,
     # k_F = N / 8,
 ):
     power_spectrum = forcing_spectrum(strength, k_F)
-    random_phase = np.random.rand(N,int(N/2)+1)
+    random_phase = np.random.rand(N, int(N/2)+1)
     F_ft = power_spectrum * np.exp(2j*np.pi * random_phase)
     return ft.irfft2(F_ft)
+
 
 def energy(
     q,
@@ -159,11 +174,13 @@ def energy(
 ):
     return np.sum(q * psi / 2)
 
-def energy_input(
+
+def energy_input_rate(
     F,
     psi,
 ):
-    return np.sum(F * psi) * Dt
+    return -np.sum(F * psi)
+
 
 def derivative(
     f,
@@ -171,7 +188,8 @@ def derivative(
 ):
     df = (np.roll(f, -1, axis=axis) - np.roll(f, +1, axis=axis)) / (2 * Dx)
     return df
-    
+
+
 def velocity(
     psi,
 ):
@@ -179,10 +197,12 @@ def velocity(
     v_y = -derivative(psi, 0) # -d(psi)/dx
     return v_x, v_y
 
+
 def pseudo_laplacian2d(
     f,
 ):
     return np.roll(f, -1, axis=0) + np.roll(f, +1, axis=0) + np.roll(f, +1, axis=1) + np.roll(f, -1, axis=1) - 4* f
+
 
 def spectrum(
     f,
@@ -193,6 +213,7 @@ def spectrum(
     spectrum, _, _ = binned_statistic(k.flatten(), np.abs(f_ft).flatten(), statistic='mean', bins=np.arange(k_range+1))
     return 2*np.pi * np.arange(k_range) * spectrum
 
+
 def linear_sys_inv(
     c,
     d,
@@ -200,6 +221,7 @@ def linear_sys_inv(
     M = (1 + c + d/2) * np.eye(N) - np.diag(c/2 * np.ones(N-1), 1) - np.diag(c/2 * np.ones(N-1), -1)
     M[0, N-1] = M[N-1, 0] = -c/2
     return la.inv(M)
+
 
 def arakawa_jacobian(
     q,
@@ -238,6 +260,7 @@ def arakawa_jacobian(
             + (p1 - p7) * (q8 - q)
             + (p3 - p5) * (q - q4)) / (12 * Dx**2)
 
+
 @cache
 def laplacian_eig(
     shape,
@@ -247,6 +270,7 @@ def laplacian_eig(
     lap_eig[0, 0] = np.inf
     return lap_eig
 
+
 def inv_laplacian2d(
     omega,
 ):
@@ -254,12 +278,14 @@ def inv_laplacian2d(
     psi_ft = omega_ft / laplacian_eig(omega_ft.shape)
     return ft.irfft2(psi_ft)
 
+
 def inv_laplacian_topography(
     q,
     # h,
 ):
     omega = h * q
     return inv_laplacian2d(omega)
+
 
 def avg_coord( # averaging in the square domain [a, b]^2
     f, # weights
@@ -270,6 +296,7 @@ def avg_coord( # averaging in the square domain [a, b]^2
     avg_x = np.average(x[a:b, a:b], weights=f[a:b, a:b])
     avg_y = np.average(y[a:b, a:b], weights=f[a:b, a:b])
     return avg_x, avg_y
+
 
 def zero_coord( # finding combined zeros in the square domain [a, b]^2
     f_x,
@@ -292,6 +319,7 @@ def zero_coord( # finding combined zeros in the square domain [a, b]^2
     else:
         return (a+b)/2, (a+b)/2
 
+
 def find_vortex_center(
     q,
     v_x,
@@ -307,6 +335,7 @@ def find_vortex_center(
     pos_ctr = (zero_max_ctr_v + np.array([x_max, y_max])-ctr)%N *Dx # revert reference frame change
     return pos_ctr
 
+
 def avg_vorticity(
     v_x,
     v_y,
@@ -319,6 +348,7 @@ def avg_vorticity(
     du_r = du_x * np.cos(angle) + du_y * np.sin(angle) # scalar product with radial versor (cos(a), sin(a))
     return u/r + du_r
 
+
 def avg_centered_field(
     q,
     v_x,
@@ -329,6 +359,7 @@ def avg_centered_field(
     omega = avg_vorticity(v_x, v_y, dist, angle)
     avg_omega, _, _ = binned_statistic(dist.flatten(), omega.flatten(), statistic='mean', bins=bins)
     return avg_omega
+
 
 def rungekutta_step(
     c,
@@ -341,7 +372,7 @@ def rungekutta_step(
     J,
     F,
     forcing: callable,
-    streamfunction = inv_laplacian2d,
+    streamfunction: callable,
 ):
     J_p = J.copy()
     F_p = F.copy()
@@ -354,6 +385,7 @@ def rungekutta_step(
     psi = streamfunction(q)
     return q, psi, J
 
+
 def time_iter(
     q,
     psi,
@@ -361,6 +393,7 @@ def time_iter(
     forcing: callable,
     t0 = -1,
     streamfunction = inv_laplacian2d,
+    reload_bak = True,
 ):
     gamma = np.array((8/15, 5/12, 3/4))
     rho = np.array((0, -17/60, -5/12))
@@ -371,16 +404,16 @@ def time_iter(
     for i in range(3):
         L[i] = linear_sys_inv(c[i], d[i])
 
-    frames_folder, bak_folder = open_folders()
+    frames_folder, bak_folder = open_folders(reload_bak)
     if reload_bak:
         stat_file = open(bak_folder / 'time_stat.dat', 'a')
     else:
         stat_file = open(bak_folder / 'time_stat.dat', 'w')
         print('# time E eps avg_k', file=stat_file)
-        
-    # max_dist = int(N/2 * np.sqrt(2)) # maximum distance from the domain center
-    # bkgnd_sum = np.zeros(max_dist)
-    # bins = np.arange(max_dist+1) * Dx
+    if analize_vortex:
+        max_dist = int(N/2 * np.sqrt(2)) # maximum distance from the domain center
+        bkgnd_sum = np.zeros(max_dist)
+        bins = np.arange(max_dist+1) * Dx
     
     F = forcing()
     revol_time = pow(sd_len**2/(2*eps), 1/3)
@@ -392,49 +425,21 @@ def time_iter(
     for t in time_exec:
         for i in range(3):
             q, psi, J = rungekutta_step(c[i], d[i], gamma[i], rho[i], L[i], q, psi, J, F, forcing, streamfunction)
-        # (v_x, v_y) = velocity(psi)
-        # bkgnd_sum = bkgnd_sum + avg_centered_field(q, v_x, v_y, bins) + avg_centered_field(-q, -v_x, -v_y, bins)
+        if analize_vortex:
+            (v_x, v_y) = velocity(psi)
+            bkgnd_sum = bkgnd_sum + avg_centered_field(q, v_x, v_y, bins) + avg_centered_field(-q, -v_x, -v_y, bins)
         if t%T_update == 0:
             E = energy(q, psi)
-            E_in = energy_input(F, psi)
+            E_in = energy_input_rate(F, psi)
             S = spectrum(q)
             avg_k = np.average(np.arange(S.size), weights=S)
             time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {E_in:.5g} ')
-            print(t*Dt, E, E_in*T_update, avg_k, sep='\t', file=stat_file, flush=True)
+            print(t*Dt, E, E_in*Dt*T_update, avg_k, sep='\t', file=stat_file, flush=True)
         if t%T_print == 0:
             contour_plot(q, frames_folder, t, 'Vorticity')
             np.save(bak_folder / f'q_{t:06}', q)
         
     stat_file.close()
-    # bkgnd = bkgnd_sum / (2 * (T + 1))
-    # np.save(bak_folder / f'bkgnd', np.array((bins[:-1], bkgnd)))
-
-def main():
-    global reload_bak
-    _, bak_folder = open_folders() # looking for past simulations backup files
-    bak_file, t0 = find_highest_numbered_file(bak_folder)
-    if bak_file: # asking user confirmation to reload last simulation (default)
-        print(f'A previous simulation has been found: {bak_file}.')
-        print('Starting a different one will overwrite it.')
-        user_input = input('  Reload last simulation? [Y/n]')
-        if user_input.lower() in ['no', 'n']:
-            print('Launching a new simulation and overwriting the past one.')
-            reload_bak = False
-        else:
-            print(f'Restarting past simulation from {t0=}.')
-            reload_bak = True
-    else:
-        print('No previous simulation was found; launching a new one.')
-        reload_bak = False
-
-    if reload_bak:
-        q = np.load(bak_folder / bak_file)
-        psi = inv_laplacian2d(q)
-        J = arakawa_jacobian(q, psi)
-        time_iter(q, psi, J, random_forcing, t0)
-    else:
-        q = psi = J = np.zeros((N, N))
-        time_iter(q, psi, J, random_forcing)
-
-if __name__ == "__main__":
-    main()
+    if analize_vortex:
+        bkgnd = bkgnd_sum / (2 * (T + 1))
+        np.save(bak_folder / f'bkgnd', np.array((bins[:-1], bkgnd)))
