@@ -6,11 +6,12 @@ import po2d_classes as po
 def gauss_topography(
     Dx: float,  # grid spacing
     n: int,     # grid size
+    sigma = 1,  # mount width
 ):
     ctr = int(n-1)/2 * Dx
     dist, _ = po.relative_pos(ctr, ctr, Dx, n)
-    return np.exp(-dist**2)
-    
+    return np.exp(-dist**2 / (2 * sigma**2))
+
 def random_topography(
     peaks: int, # number of peaks
     Dx: float,  # grid spacing
@@ -29,10 +30,11 @@ def random_topography(
 
 def main():
     analize_vortex = False
-    simul = po.FluidSimulator(po.random_forcing, analize_vortex)
+    # simul = po.FluidSimulator(po.random_forcing, analize_vortex)
+    simul = po.FluidSimulator(po.zero_forcing, analize_vortex)
     simul.set_diagnostics()
-    # h = gauss_topography(simul.Dx, simul.N)
-    topography = random_topography(20, simul.Dx, simul.N)
+    topography = gauss_topography(simul.Dx, simul.N)
+    # topography = random_topography(20, simul.Dx, simul.N)
     fluid = po.FluidStateTopography(topography, simul.reload_bak, simul.bak_dir, simul.bak_file)
     simul.set_physical_param(fluid)
     for t in simul.time_exec:

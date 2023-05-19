@@ -138,7 +138,7 @@ class FluidSimulator:
     def rungekutta_step(
         self,
         fluid,
-        step,
+        step: int,
     ):
         F_p = self.F.copy()
         self.F = self.forcing(self.N)
@@ -202,7 +202,7 @@ class FluidState:
 
     def avg_centered_field(
         self,
-        bins,
+        bins: np.ndarray,
     ):
         vortex_ctr = self.find_vortex_center()
         dist, angle = relative_pos(*vortex_ctr, self.Dx, self.N)
@@ -223,8 +223,8 @@ class FluidState:
 
     def avg_vorticity(
         self,
-        r,
-        angle,
+        r: np.ndarray,
+        angle: np.ndarray,
     ):
         u = self.v_y * np.cos(angle) - self.v_x * np.sin(angle)   # scalar product with tangential versor (-sin(a), cos(a))
         du_x = derivative(u, 0, self.Dx)     # compute gradient of u
@@ -239,7 +239,7 @@ class FluidState:
         print_fig = True,
     ):
         lim = max(abs(np.min(self.q)), abs(np.max(self.q)))
-        lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
+        lin_thresh = np.power(10, np.floor(np.log10(lim/100)))  # power of 10 closest to lim/100
         log_norm = colors.SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         col_map = cm.PuOr_r
         plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=200)
@@ -249,7 +249,7 @@ class FluidState:
         plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
         plt.title(f'Vorticity  |  t={(t*simul.Dt):.3f}')
         if print_fig:
-            plt.savefig(simul.frames_dir / f'{t:05}.png', dpi=200)#
+            plt.savefig(simul.frames_dir / f'{t:05}.png', dpi=200)
         else:
             plt.show()
         plt.close()
@@ -322,7 +322,7 @@ class FluidState:
 class FluidStateTopography(FluidState):
     def __init__(
         self,
-        topography,
+        topography: np.ndarray,
         reload_bak = False,
         bak_dir = None,
         bak_file = None,
@@ -360,14 +360,14 @@ class FluidStateTopography(FluidState):
         plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
         plt.title(f'Vorticity  |  t={(t*simul.Dt):.3f}')
         if print_fig:
-            plt.savefig(simul.frames_dir / f'{t:05}.png', dpi=200)#
+            plt.savefig(simul.frames_dir / f'{t:05}.png', dpi=200)
         else:
             plt.show()
         plt.close()
 
 
 def spectrum(
-    f,
+    f: np.ndarray,
     n: int,     # grid size
 ):
     f_ft = ft.rfft2(f)
@@ -420,6 +420,27 @@ def zero_forcing(
     return np.zeros((n, n))
 
 
+def eig_function(
+    h: np.ndarray,  # topography
+    n: int,         # grid size
+):
+    from scipy.sparse.linalg import eigs
+    q_of_psi = laplacian_matrix(n) / h.flatten()
+    eigs, eigv = eigs(q_of_psi, 64, sigma=0)
+    del(q_of_psi)
+    return eigs, eigv
+
+
+# @cache
+def laplacian_matrix(
+    n: int, # grid size
+):
+    n2 = n*n
+    laplacian = 4 * np.eye(n2) - np.diag(np.ones(n2-1), 1) - np.diag(np.ones(n2-1), -1) - np.diag(np.ones(n2-n), n) - np.diag(np.ones(n2-n), -n) - np.diag(np.ones(n), n2-n) - np.diag(np.ones(n), n-n2)
+    laplacian[0, n2-1] = laplacian[n2-1, 0] = -1
+    return laplacian
+
+
 def relative_pos(
     x_ctr: float,   # center coordinates
     y_ctr: float,
@@ -437,7 +458,7 @@ def relative_pos(
 
 
 def inv_laplacian2d(
-    omega,
+    omega: np.ndarray,
     Dx: float,  # grid spacing
 ):
     omega_ft = ft.rfft2(omega)
@@ -447,7 +468,7 @@ def inv_laplacian2d(
 
 @cache
 def laplacian_eig(
-    shape,
+    shape: tuple,
     Dx: float,  # grid spacing
 ):
     cos_sum = np.cos(np.arange(shape[0]) * Dx)[:, None] + np.cos(np.arange(shape[1]) * Dx)[None, :]
@@ -457,7 +478,7 @@ def laplacian_eig(
 
 
 def derivative(
-    f,
+    f: np.ndarray,
     axis: int,
     Dx: float,  # grid spacing
 ):
@@ -466,14 +487,14 @@ def derivative(
 
 
 def pseudo_laplacian2d(
-    f,
+    f: np.ndarray,
 ):
     return np.roll(f, -1, axis=0) + np.roll(f, +1, axis=0) + np.roll(f, +1, axis=1) + np.roll(f, -1, axis=1) - 4* f
 
 
 def zero_coord( # finding combined zeros in the square domain [a, b]^2
-    f_x,
-    f_y,
+    f_x: np.ndarray,
+    f_y: np.ndarray,
     a: int, # interval left endpoint
     b: int, # interval right endpoint
 ):
@@ -494,7 +515,7 @@ def zero_coord( # finding combined zeros in the square domain [a, b]^2
 
 
 def avg_coord( # averaging in the square domain [a, b]^2
-    f,      # weights
+    f: np.ndarray,      # weights
     a: int, # interval left endpoint
     b: int, # interval right endpoint
 ):
