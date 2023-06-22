@@ -6,11 +6,26 @@ import po2d_classes as po
 def gauss_topography(
     Dx: float,  # grid spacing
     n: int,     # grid size
-    sigma = 1,  # mount width
+    sigma = None,  # mount width
 ):
     ctr = int(n-1)/2 * Dx
+    if sigma is None:
+        sigma = 2*np.pi / 10
     dist, _ = po.relative_pos(ctr, ctr, Dx, n)
     return np.exp(-dist**2 / (2 * sigma**2))
+
+def diag_ridge_topography(
+    Dx: float,  # grid spacing
+    n: int,     # grid size
+    sigma = None,  # mount width
+):
+    sd_len = n * Dx
+    pos = np.arange(n) * Dx
+    xy_diff = np.abs(pos[:, None] - pos[None, :])
+    dist2diag = np.where(xy_diff < sd_len/2, xy_diff, sd_len - xy_diff) / np.sqrt(2)
+    if sigma is None:
+        sigma = 2*np.pi / 10
+    return np.exp(-dist2diag**2 / (2 * sigma**2))
 
 def random_topography(
     peaks: int, # number of peaks
