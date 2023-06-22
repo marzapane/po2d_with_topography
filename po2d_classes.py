@@ -24,10 +24,14 @@ class FluidSimulator:
         self,
         forcing: callable,
         analize_vortex = False,
+        adaptive_Dt = False,
+        plot_vorticity = True,
     ):
         self.forcing = forcing
         self.analize_vortex = analize_vortex
+        self.adapt_Dt = adaptive_Dt
         self.diagnostics = False
+        self.plot_vorticity = plot_vorticity
 
     def set_diagnostics(self):
         self.diagnostics = True
@@ -37,9 +41,11 @@ class FluidSimulator:
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
         if self.reload_bak:
+            self.time = np.load(self.bak_dir / self.bak_file)['t']
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'a')
         else:
-            self.t0 = -1
+            self.t0 = 0
+            self.time = 0.
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'w')
             print('# time E eps avg_k', file=self.stat_file)
         if self.analize_vortex:
@@ -61,11 +67,11 @@ class FluidSimulator:
     def find_highest_numbered_file(self):
         max_number = -1
         max_file = None
-        for file in self.bak_dir.glob('q_*.npy'):
+        for file in self.bak_dir.glob('q_*.npz'):
             try:
                 file_number = int(file.stem[2:])
             except ValueError:
-                print(f'<{filename}.npy> does not have a valid name.')
+                print(f'<{filename}.npz> does not have a valid name.')
                 pass
             else:
                 if file_number > max_number:
@@ -82,25 +88,31 @@ class FluidSimulator:
                 print('Launching a new simulation and overwriting the past one.')
                 return False
             else:
-                print(f'Restarting past simulation from {self.t0=}.')
+                print(f'Restarting past simulation from t0={self.t0}.')
                 return True
         else:
             print('No previous simulation was found; launching a new one.')
             return False
 
     def set_physical_param(self, fluid):
-        self.c = self.Dt * self.alpha / (self.Re * self.Dx**2)
-        self.d = self.Dt * self.alpha * self.ekman
-        for i in range(3):
-            self.L[i] = self.linear_sys_inv(self.c[i], self.d[i], self.N)
+        self.set_integration_const()
+        if self.adapt_Dt:
+            self.max_CFL = np.sqrt(3)/10
         revol_time = pow(self.sd_len**2/(2*self.eps), 1/3)
         self.T_print = min(int(revol_time/self.Dt), int(self.T/5))
         self.T_update = max(10, int(self.T/1000))
         print(f'Simulation times are:\n  Dt = {self.Dt}\n  T_LE ~ {revol_time}')
-        self.time_exec = tqdm(np.arange(self.t0+1, self.T+self.t0+2))
+        self.time_exec = tqdm(np.arange(self.T+1))
         self.F = self.forcing(self.N)
-        fluid.psi = fluid.streamfunction()
-        fluid.J = fluid.arakawa_jacobian()
+        fluid.psi = fluid.streamfunction(self.t0)
+        fluid.J = fluid.arakawa_jacobian(self.t0)
+        
+    def set_integration_const(self):
+        self.c = self.Dt * self.alpha / (self.Re * self.Dx**2)
+        self.d = self.Dt * self.alpha * self.ekman
+        for i in range(3):
+            self.L[i] = self.linear_sys_inv(self.c[i], self.d[i], self.N)
+        
 
     @staticmethod
     def linear_sys_inv(
@@ -117,10 +129,19 @@ class FluidSimulator:
         fluid,
         t: int,
     ):
+        if self.adapt_Dt:
+            fluid.velocity(t)
+            max_velocity = np.max(np.sqrt(np.square(fluid.v_x) + np.square(fluid.v_y)))
+            Dt = self.max_CFL * self.Dx / max_velocity
+            # print(f'v({t}) <= {max_velocity:3e}')
+            if (np.abs(Dt - self.Dt) / self.Dt > 10):
+                self.Dt = Dt
+                self.set_integration_const()
         for step in range(3):
-            self.rungekutta_step(fluid, step)
+            self.rungekutta_step(fluid, step, t)
+        self.time += self.Dt
         if self.analize_vortex:
-            (fluid.v_x, fluid.v_y) = fluid.velocity()
+            fluid.velocity(t)
             self.bkgnd_sum = self.bkgnd_sum + fluid.avg_centered_field(self.bins) + (-fluid).avg_centered_field(self.bins)
         if (t % self.T_update) == 0:
             E = fluid.energy()
@@ -129,26 +150,28 @@ class FluidSimulator:
             avg_k = np.average(np.arange(S.size), weights=S)
             self.time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {E_in:.5g} ')
             if self.diagnostics:
-                print(t*self.Dt, E, E_in*self.Dt*self.T_update, avg_k, sep='\t', file=self.stat_file, flush=True)
+                print(self.time, E, E_in*self.Dt*self.T_update, avg_k, sep='\t', file=self.stat_file, flush=True)
         if (t % self.T_print) == 0:
             if self.diagnostics:
-                np.save(self.bak_dir / f'q_{t:06}', fluid.q)
-            fluid.plot_vorticity(self, t, print_fig=self.diagnostics)
+                np.savez(self.bak_dir / f'q_{(t+self.t0):06}', q=fluid.q, t=self.time)
+            if self.plot_vorticity:
+                fluid.plot_vorticity(self, t, print_fig=self.diagnostics)
 
     def rungekutta_step(
         self,
         fluid,
         step: int,
+        t: int,
     ):
         F_p = self.F.copy()
         self.F = self.forcing(self.N)
         J_p = fluid.J.copy()
-        fluid.J = fluid.arakawa_jacobian()
+        fluid.arakawa_jacobian(t)
         rhs = self.Dt* (self.gamma[step]*(self.F - fluid.J) + self.rho[step]*(F_p - J_p)) - self.d[step]*fluid.q + self.c[step]*pseudo_laplacian2d(fluid.q)
         middle_step = np.matmul(self.L[step], rhs)
         Dq = np.matmul(middle_step, self.L[step].transpose())
         fluid.q = fluid.q + Dq
-        fluid.psi = fluid.streamfunction()
+        fluid.streamfunction(t)
 
     def conclude(self):
         if self.diagnostics:
@@ -170,7 +193,7 @@ class FluidState:
         vorticity = None,
     ):
         if reload_bak:
-            self.q = np.load(bak_dir / bak_file)
+            self.q = np.load(bak_dir / bak_file)['q']
         else:
             if vorticity is None:
                 self.q = np.zeros((self.N, self.N))
@@ -180,23 +203,37 @@ class FluidState:
                 else:
                     raise Exception("Error: wrong argument: q must be <numpy.ndarray> of shape (N, N).")
         self.psi = None
+        self.t_psi = None
         self.J = None
+        self.t_J = None
         (self.v_x, self.v_y) = (None, None)
+        self.t_vel = None
 
-    def streamfunction(self):
-        return inv_laplacian2d(self.q, self.Dx)
+    def streamfunction(
+        self,
+        t: int,
+    ):
+        if self.t_psi != t:
+            self.t_psi = t
+            self.psi = inv_laplacian2d(self.q, self.Dx)
+        return self.psi
 
-    def velocity(self):
-        v_x = derivative(self.psi, 1, self.Dx)  # d(psi)/dy
-        v_y = -derivative(self.psi, 0, self.Dx) # -d(psi)/dx
-        return v_x, v_y
+    def velocity(
+        self,
+        t: int,
+    ):
+        if self.t_vel != t:
+            self.t_vel = t
+            self.v_x = derivative(self.psi, 1, self.Dx)  # d(psi)/dy
+            self.v_y = -derivative(self.psi, 0, self.Dx) # -d(psi)/dx
+        return self.v_x, self.v_y
 
     def energy(self):
         return np.sum(self.q * self.psi / 2)
 
     def energy_input_rate(
         self,
-        F,
+        F: np.ndarray,
     ):
         return np.sum(F * self.psi)
 
@@ -247,47 +284,53 @@ class FluidState:
         theta = np.linspace(0, self.N-1, num=5)
         plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
         plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
-        plt.title(f'Vorticity  |  t={(t*simul.Dt):.3f}')
+        plt.title(f'Vorticity  |  t={simul.time:.3f}')
         if print_fig:
-            plt.savefig(simul.frames_dir / f'{t:05}.png', dpi=200)
+            plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
         else:
             plt.show()
         plt.close()
 
-    def arakawa_jacobian(self):
-        # the neighbours of the i-th point are named by numbers according to the following order:
-        #    y
-        #    ^ 8 1 2
-        #    | 7 i 3
-        #    | 6 5 4
-        #   -|------> x
-        # only the needed ones will be saved in memory
-        q = self.q
-        q1 = np.roll(q,  -1, axis=1)
-        q2 = np.roll(q1, -1, axis=0)
-        q3 = np.roll(q,  -1, axis=0)
-        q4 = np.roll(q3, +1, axis=1)
-        q5 = np.roll(q,  +1, axis=1)
-        q6 = np.roll(q5, +1, axis=0)
-        q7 = np.roll(q,  +1, axis=0)
-        q8 = np.roll(q7, -1, axis=1)
-        p = self.psi
-        p1 = np.roll(p,  -1, axis=1)
-        p2 = np.roll(p1, -1, axis=0)
-        p3 = np.roll(p,  -1, axis=0)
-        p4 = np.roll(p3, +1, axis=1)
-        p5 = np.roll(p,  +1, axis=1)
-        p6 = np.roll(p5, +1, axis=0)
-        p7 = np.roll(p,  +1, axis=0)
-        p8 = np.roll(p7, -1, axis=1)
-        return - ((p5 + p4 - p1 - p2) * (q3 - q)
-                + (p6 + p5 - p8 - p1) * (q - q7)
-                + (p3 + p2 - p7 - p8) * (q1 - q)
-                + (p4 + p3 - p6 - p7) * (q - q5)
-                + (p3 - p1) * (q2 - q)
-                + (p5 - p7) * (q - q6)
-                + (p1 - p7) * (q8 - q)
-                + (p3 - p5) * (q - q4)) / (12 * self.Dx**2)
+    def arakawa_jacobian(
+        self,
+        t: int,
+    ):
+        if self.t_J != t:
+            self.t_J = t
+            # the neighbours of the i-th point are named by numbers according to the following order:
+            #    y
+            #    ^ 8 1 2
+            #    | 7 i 3
+            #    | 6 5 4
+            #   -|------> x
+            # only the needed ones will be saved in memory
+            q = self.q
+            q1 = np.roll(q,  -1, axis=1)
+            q2 = np.roll(q1, -1, axis=0)
+            q3 = np.roll(q,  -1, axis=0)
+            q4 = np.roll(q3, +1, axis=1)
+            q5 = np.roll(q,  +1, axis=1)
+            q6 = np.roll(q5, +1, axis=0)
+            q7 = np.roll(q,  +1, axis=0)
+            q8 = np.roll(q7, -1, axis=1)
+            p = self.psi
+            p1 = np.roll(p,  -1, axis=1)
+            p2 = np.roll(p1, -1, axis=0)
+            p3 = np.roll(p,  -1, axis=0)
+            p4 = np.roll(p3, +1, axis=1)
+            p5 = np.roll(p,  +1, axis=1)
+            p6 = np.roll(p5, +1, axis=0)
+            p7 = np.roll(p,  +1, axis=0)
+            p8 = np.roll(p7, -1, axis=1)
+            self.J= -((p5 + p4 - p1 - p2) * (q3 - q)
+                    + (p6 + p5 - p8 - p1) * (q - q7)
+                    + (p3 + p2 - p7 - p8) * (q1 - q)
+                    + (p4 + p3 - p6 - p7) * (q - q5)
+                    + (p3 - p1) * (q2 - q)
+                    + (p5 - p7) * (q - q6)
+                    + (p1 - p7) * (q8 - q)
+                    + (p3 - p5) * (q - q4)) / (12 * self.Dx**2)
+        return self.J
 
     def __neg__(self):
         neg_self = self.__class__(vorticity = -self.q)
@@ -306,11 +349,11 @@ class FluidState:
         return sum_
 
     def __sub__(self, other):
-        diff = self.__class__(vorticity = self.q + other.q)
+        diff = self.__class__(vorticity = self.q - other.q)
         if (self.psi is not None) and (other.psi is not None):
-            diff.psi = self.psi + other.psi
+            diff.psi = self.psi - other.psi
         if (self.v_x is not None) and (other.v_x is not None):
-            (diff.v_x, diff.v_y) = (self.v_x + other.v_x, self.v_y + other.v_y)
+            (diff.v_x, diff.v_y) = (self.v_x - other.v_x, self.v_y - other.v_y)
         return diff
 
     def __repr__(self):
@@ -339,8 +382,14 @@ class FluidStateTopography(FluidState):
         self.h = 1 - 0.9 * topography
         super().__init__(reload_bak, bak_dir, bak_file, vorticity)
 
-    def streamfunction(self):
-        return inv_laplacian2d(self.q * self.h, self.Dx)
+    def streamfunction(
+        self,
+        t: int,
+    ):
+        if self.t_psi != t:
+            self.t_psi = t
+            self.psi = inv_laplacian2d(self.q * self.h, self.Dx)
+        return self.psi
     
     def plot_vorticity(
         self,
@@ -358,12 +407,37 @@ class FluidStateTopography(FluidState):
         theta = np.linspace(0, self.N-1, num=5)
         plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
         plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
-        plt.title(f'Vorticity  |  t={(t*simul.Dt):.3f}')
+        plt.title(f'Vorticity  |  t={simul.time:.3f}')
         if print_fig:
-            plt.savefig(simul.frames_dir / f'{t:05}.png', dpi=200)
+            plt.savefig(simul.frames_dir / f'{(t+t0):05}.png', dpi=200)
         else:
             plt.show()
         plt.close()
+    
+    def __neg__(self):
+        neg_self = self.__class__(vorticity = -self.q, topography=self.topography)
+        if self.psi is not None:
+            neg_self.psi = -self.psi
+        if self.v_x is not None:
+            (neg_self.v_x, neg_self.v_y) = (-self.v_x, -self.v_y)
+        return neg_self
+    
+    def __add__(self, other):
+        sum_ = self.__class__(vorticity = self.q + other.q, topography=self.topography)
+        if (self.psi is not None) and (other.psi is not None):
+            sum_.psi = self.psi + other.psi
+        if (self.v_x is not None) and (other.v_x is not None):
+            (sum_.v_x, sum_.v_y) = (self.v_x + other.v_x, self.v_y + other.v_y)
+        return sum_
+
+    def __sub__(self, other):
+        diff = self.__class__(vorticity = self.q - other.q, topography=self.topography)
+        if (self.psi is not None) and (other.psi is not None):
+            diff.psi = self.psi - other.psi
+        if (self.v_x is not None) and (other.v_x is not None):
+            (diff.v_x, diff.v_y) = (self.v_x - other.v_x, self.v_y - other.v_y)
+        return diff
+
 
 
 def spectrum(

@@ -93,7 +93,7 @@ def contour_plot(
         if t >= 0:
             plt.title(f't={(t*Dt):.3f}')
     # plt.show()
-    plt.savefig(frames_folder / f'{t:05}.png', dpi=200)#
+    plt.savefig(frames_folder / f'{t:05}.pdf')#
     plt.close()
 
 
