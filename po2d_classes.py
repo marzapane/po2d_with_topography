@@ -25,13 +25,13 @@ class FluidSimulator:
         forcing: callable,
         analize_vortex = False,
         adaptive_Dt = False,
-        plot_vorticity = True,
+        plot_flag = True,
     ):
         self.forcing = forcing
         self.analize_vortex = analize_vortex
         self.adapt_Dt = adaptive_Dt
         self.diagnostics = False
-        self.plot_vorticity = plot_vorticity
+        self.plot_flag = plot_flag
 
     def set_diagnostics(self):
         self.diagnostics = True
@@ -154,8 +154,8 @@ class FluidSimulator:
         if (t % self.T_print) == 0:
             if self.diagnostics:
                 np.savez(self.bak_dir / f'q_{(t+self.t0):06}', q=fluid.q, t=self.time)
-            if self.plot_vorticity:
-                fluid.plot_vorticity(self, t, print_fig=self.diagnostics)
+            if self.plot_flag:
+                fluid.plot_field(self, t, print_fig=self.diagnostics)
 
     def rungekutta_step(
         self,
@@ -269,7 +269,7 @@ class FluidState:
         du_r = du_x * np.cos(angle) + du_y * np.sin(angle)  # scalar product with radial versor (cos(a), sin(a))
         return u/r + du_r
 
-    def plot_vorticity(
+    def plot_field(
         self,
         simul,
         t: int,
@@ -278,13 +278,19 @@ class FluidState:
         lim = max(abs(np.min(self.q)), abs(np.max(self.q)))
         lin_thresh = np.power(10, np.floor(np.log10(lim/100)))  # power of 10 closest to lim/100
         log_norm = colors.SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
-        col_map = cm.PuOr_r
-        plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=200)
+        # col_map = cm.PuOr_r
+        col_map = cm.BrBG
+        (x, y) = coordinates(self.Dx, self.N)
+        plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=75)
         plt.colorbar(cm.ScalarMappable(norm=log_norm, cmap=col_map), ax=plt.gca())
-        theta = np.linspace(0, self.N-1, num=5)
+        plt.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplot_color)
+        theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
         plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
         plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
+        plt.xlim(0, (self.N-1) * self.Dx)
+        plt.ylim(0, (self.N-1) * self.Dx)
         plt.title(f'Vorticity  |  t={simul.time:.3f}')
+        plt.gca().set_aspect('equal')
         if print_fig:
             plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
         else:
@@ -391,7 +397,7 @@ class FluidStateTopography(FluidState):
             self.psi = inv_laplacian2d(self.q * self.h, self.Dx)
         return self.psi
     
-    def plot_vorticity(
+    def plot_field(
         self,
         simul,
         t: int,
@@ -400,14 +406,20 @@ class FluidStateTopography(FluidState):
         lim = max(abs(np.min(self.q)), abs(np.max(self.q)))
         lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
         log_norm = colors.SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
-        col_map = cm.PuOr_r
-        plt.contour(self.topography.T, colors='black')
-        plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=200)
+        # col_map = cm.PuOr_r
+        col_map = cm.BrBG
+        (x, y) = coordinates(self.Dx, self.N)
+        plt.contour(x.T, y.T, self.topography, colors='black', alpha=0.75)
+        plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=75)
         plt.colorbar(cm.ScalarMappable(norm=log_norm, cmap=col_map), ax=plt.gca())
-        theta = np.linspace(0, self.N-1, num=5)
+        plt.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplot_color)
+        theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
         plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
         plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
+        plt.xlim(0, (self.N-1) * self.Dx)
+        plt.ylim(0, (self.N-1) * self.Dx)
         plt.title(f'Vorticity  |  t={simul.time:.3f}')
+        plt.gca().set_aspect('equal')
         if print_fig:
             plt.savefig(simul.frames_dir / f'{(t+t0):05}.png', dpi=200)
         else:
@@ -564,6 +576,55 @@ def pseudo_laplacian2d(
     f: np.ndarray,
 ):
     return np.roll(f, -1, axis=0) + np.roll(f, +1, axis=0) + np.roll(f, +1, axis=1) + np.roll(f, -1, axis=1) - 4* f
+
+
+def autocorrelation(
+    f: np.ndarray,  # field
+):
+    import numpy.fft as ft
+    f_T = ft.rfft2(f)
+    return ft.irfft2(f_T * f_T.conjugate())
+    
+
+def pbc_dist(
+    x: int, # position
+    D: int, # domain size
+):
+    if x <= D/2:
+        return x
+    else:
+        return D - x
+
+
+def measure_valley_dist(
+    f: np.ndarray,  # field
+    n: int,         # domain size
+):
+    autocorrelation = autocorrelation(f)
+    max_dist = int(np.round(n / np.sqrt(2)))
+    C = np.zeros(max_dist + 1)
+    count = np.zeros(max_dist + 1)
+
+    for x in range(n):
+        for y in range(n):
+            dist = np.hypot(pbc_dist(x, n), pbc_dist(y, n)).round().astype(int)
+            count[dist] += 1
+            C[dist] += autocorrelation[x, y]
+    C /= count * np.square(f).sum()
+    dist = np.arange(max_dist + 1)
+    long_range_C = autocorrelation(f, n).sum(where=(dist > n/2)) / (max_dist - n/2)
+    return lrac
+
+
+def measure_concentration(
+    f: np.ndarray,  # field
+    n: int,         # domain size
+):
+    f_flt = gaussian_filter(f, sigma=n/50, truncate=2., mode='wrap')
+    L2_measure = np.square(f_flt).sum()
+    L1_measure = (np.abs(f_flt).sum())**2
+    concentration =  L2_measure / L1_measure * n**2
+    return 1 - 1 / concentration
 
 
 def zero_coord( # finding combined zeros in the square domain [a, b]^2
