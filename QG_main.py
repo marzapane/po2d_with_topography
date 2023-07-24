@@ -43,6 +43,22 @@ def random_topography(
     max_heigth = np.max(topography)
     return topography/max_heigth
 
+def square_wells_topography(
+    Dx: float,  # grid spacing
+    n: int,     # grid size
+    sigma = None,  # mount width
+):
+    if sigma is None:
+        sigma = 2*np.pi / 5
+    topography = np.zeros((n, n))
+    ctr = np.array(((np.pi/2, np.pi/2), (np.pi/2, 3*np.pi/2), (3*np.pi/2, np.pi/2), (3*np.pi/2, 3*np.pi/2)))
+    sign = (+1, -1, -1, +1)
+    for i in range(4):
+        dist, _ = relative_pos(*ctr[i], Dx, n)
+        topography += sign[i] * np.exp(-dist**2 / (2*sigma**2))
+    max_heigth = np.max(topography)
+    return topography/max_heigth
+
 def main():
     analize_vortex = False
     # simul = po.FluidSimulator(po.random_forcing, analize_vortex)
