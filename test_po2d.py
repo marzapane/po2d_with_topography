@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import po2d_classes as po
 from po2d_config import N, sd_len, Dx, Dt
+from scipy.ndimage import gaussian_filter
 
 
 def test_inv_laplacian():
@@ -37,7 +38,7 @@ def test_forcing():
         raise Exception('Error: something went wrong in the slicing.')
     s_F = po.spectrum(F, N)
     k_F = np.argmax(s_F)
-    if (k_F > N *25/128 + 1.5) or (k_F < N *25/128 - 1.5):
+    if (k_F > N/8 + 1.5) or (k_F < N/8 - 1.5):
         plt.loglog(s_F)
         plt.xlabel('|k|')
         plt.ylabel('Power Spectrum of sine_forcing')
@@ -62,6 +63,8 @@ def test_derivatives():
 def test_lamb_dipole():
     simul = po.FluidSimulator(po.zero_forcing, False)
     simul.T = 200
+    simul.t0 = 0
+    simul.time = 0.
     fluid = po.FluidState(vorticity = po.lamb_dipole(Dx, N))
     simul.set_physical_param(fluid)
     for t in simul.time_exec:
@@ -70,10 +73,10 @@ def test_lamb_dipole():
 
 def test_find_center():
     (x, y) = po.coordinates(Dx, N)
-    q = (np.exp(-(x-3)**2-(y-2)**2) - np.exp(-(x-1)**2-(y-3.5)**2)) * (10 + np.random.rand(N,N))
+    q = (np.exp(-(x-3)**2-(y-2)**2) - np.exp(-(x-1)**2-(y-3.5)**2)) * (5 + np.random.rand(N,N))
     fluid = po.FluidState(vorticity = q)
-    fluid.psi = fluid.streamfunction()
-    (fluid.v_x, fluid.v_y) = fluid.velocity()
+    fluid.streamfunction(0)
+    fluid.velocity(0)
     pos_vortex_ctr = fluid.find_vortex_center()
     nearest_pos_ctr = np.around(pos_vortex_ctr / (2*np.pi/N)).astype(int)
     q_pos_ctr = q[tuple(nearest_pos_ctr)]
@@ -86,11 +89,13 @@ def test_find_center():
             print(f'\n{pos_vortex_ctr=}, {neg_vortex_ctr=}')
             print(f'{nearest_pos_ctr=}, {nearest_neg_ctr=}')
             print(f'{q_pos_ctr=}, {q_neg_ctr=}')
-            plt.streamplot(x.T, y.T, fluid.v_x.T, fluid.v_y.T, density=3)
-            plt.scatter(*(pos_vortex_ctr), c='red')
-            plt.scatter(*(neg_vortex_ctr), c='black')
-            plt.scatter(*(nearest_pos_ctr*Dx), c='red')
-            plt.scatter(*(nearest_neg_ctr*Dx), c='black')
+            plt.streamplot(x.T, y.T, fluid.v_x.T, fluid.v_y.T, density=2)
+            plt.contourf(x.T, y.T, q.T, levels=50)
+            plt.scatter(*(pos_vortex_ctr), c='black')
+            plt.scatter(*(neg_vortex_ctr), c='red')
+            plt.scatter(*(nearest_pos_ctr*Dx), c='black')
+            plt.scatter(*(nearest_neg_ctr*Dx), c='red')
+            plt.scatter(*(rand_pos*Dx), c='blue')
             plt.title('test_find_center')
             plt.show()
             return
@@ -99,8 +104,9 @@ def test_avg_vorticity():
     (x, y) = po.coordinates(Dx, N)
     q = (np.exp(-(x-3.1)**2-(y-2.03)**2) - np.exp(-(x-1.06)**2-(y-3.5)**2)) * (10 + np.random.rand(N,N))
     fluid = po.FluidState(vorticity = q)
-    fluid.psi = fluid.streamfunction()
-    (fluid.v_x, fluid.v_y) = fluid.velocity()
+    fluid.streamfunction(0)
+    fluid.velocity(0)
+    print('ciao\n')
     bins = np.arange(int(N/2 * np.sqrt(2))+1) * Dx
     omega_pos = fluid.avg_centered_field(bins)
     omega_neg = (-fluid).avg_centered_field(bins)
@@ -108,3 +114,18 @@ def test_avg_vorticity():
     plt.plot(bins[:-1], omega_neg, label='-')
     plt.title('test_avg_vorticity')
     plt.show()
+    
+def test_clustering():
+    f = gaussian_filter(np.random.rand(n, n), sigma=n/50, truncate=2., mode='wrap').round(0).astype(int)
+    cluster = cluster_ones(f, n)
+    f_c = -np.ones((n, n)).astype(int)
+    for i in range(len(cluster)):
+        for node in cluster[i]:
+            f_c[tuple(node)] = i
+    f_cc = np.zeros((n, n))
+    for x in range(n):
+        for y in range(n):
+            if f_c[x, y] >= 0:
+                f_cc[x, y] = 1
+    if (f - f_cc).sum() > 0:
+        raise Exception('Error: problems in clustering.')
