@@ -47,7 +47,7 @@ class FluidSimulator:
             self.t0 = 0
             self.time = 0.
             self.stat_file = open(self.bak_dir / 'time_stat.dat', 'w')
-            print('# time E eps avg_k', file=self.stat_file)
+            print('# time E eps avg_k c(q)', file=self.stat_file)
         if self.analize_vortex:
             max_dist = int(self.N/2 * np.sqrt(2))    # furthest distance from the domain center
             self.bkgnd_sum = np.zeros(max_dist)
@@ -97,9 +97,10 @@ class FluidSimulator:
     def set_physical_param(self, fluid):
         self.set_integration_const()
         if self.adapt_Dt:
-            self.max_CFL = np.sqrt(3)/10
+            self.max_CFL = np.sqrt(3)/1000
         revol_time = pow(self.sd_len**2/(2*self.eps), 1/3)
-        self.T_print = min(int(revol_time/self.Dt), int(self.T/5))
+        self.T_print = min(int(revol_time/self.Dt) * 10, int(self.T/5))
+        # self.T_print = min(10*int(revol_time/self.Dt), int(self.T/5))
         self.T_update = max(10, int(self.T/1000))
         print(f'Simulation times are:\n  Dt = {self.Dt}\n  T_LE ~ {revol_time}')
         self.time_exec = tqdm(np.arange(self.T+1))
@@ -131,11 +132,16 @@ class FluidSimulator:
     ):
         if self.adapt_Dt:
             fluid.velocity(t)
-            max_velocity = np.max(np.sqrt(np.square(fluid.v_x) + np.square(fluid.v_y)))
-            Dt = self.max_CFL * self.Dx / max_velocity
-            # print(f'v({t}) <= {max_velocity:3e}')
+            max_velocity = np.hypot(fluid.v_x, fluid.v_y).max()
+            if max_velocity > 0:
+                Dt = self.max_CFL * self.Dx / max_velocity
+            else:
+                Dt = self.Dt
+            if Dt > self.Dx/10:
+                Dt = self.Dx/10
             if (np.abs(Dt - self.Dt) / self.Dt > 10):
                 self.Dt = Dt
+                print(f'v({t}) <= {max_velocity:3e}\t->\tDt = {Dt}')
                 self.set_integration_const()
         for step in range(3):
             self.rungekutta_step(fluid, step, t)
@@ -150,7 +156,7 @@ class FluidSimulator:
             avg_k = np.average(np.arange(S.size), weights=S)
             self.time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {E_in:.5g} ')
             if self.diagnostics:
-                print(self.time, E, E_in*self.Dt*self.T_update, avg_k, sep='\t', file=self.stat_file, flush=True)
+                print(self.time, E, E_in*self.Dt*self.T_update, avg_k, measure_concentration(fluid.q, self.N), sep='\t', file=self.stat_file, flush=True)
         if (t % self.T_print) == 0:
             if self.diagnostics:
                 np.savez(self.bak_dir / f'q_{(t+self.t0):06}', q=fluid.q, t=self.time)
@@ -280,9 +286,12 @@ class FluidState:
         log_norm = colors.SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
         col_map = cm.BrBG
+        streamplot_color='purple'
         (x, y) = coordinates(self.Dx, self.N)
-        plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=75)
+        plt.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
         plt.colorbar(cm.ScalarMappable(norm=log_norm, cmap=col_map), ax=plt.gca())
+        self.streamfunction(t)
+        self.velocity(t)
         plt.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplot_color)
         theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
         plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
@@ -385,7 +394,7 @@ class FluidStateTopography(FluidState):
                 topography_file = bak_dir / 'topography.npy'
                 if not topography_file.is_file():
                     np.save(topography_file, topography)
-        self.h = 1 - 0.9 * topography
+        self.h = 1 - 0.9 * self.topography
         super().__init__(reload_bak, bak_dir, bak_file, vorticity)
 
     def streamfunction(
@@ -403,15 +412,19 @@ class FluidStateTopography(FluidState):
         t: int,
         print_fig = True,
     ):
+        # plt.contourf(self.v_x); plt.colorbar(); plt.show(); plt.close()
         lim = max(abs(np.min(self.q)), abs(np.max(self.q)))
         lin_thresh = np.power(10.,np.floor(np.log10(lim/100)))  # closest power of 10
         log_norm = colors.SymLogNorm(linthresh=lin_thresh, vmin=-lim, vmax=lim)
         # col_map = cm.PuOr_r
         col_map = cm.BrBG
+        streamplot_color='purple'
         (x, y) = coordinates(self.Dx, self.N)
-        plt.contour(x.T, y.T, self.topography, colors='black', alpha=0.75)
-        plt.contourf(self.q.T, norm=log_norm, cmap=col_map, levels=75)
+        plt.contour(x.T, y.T, self.topography.T, colors='black', alpha=0.75)
+        plt.contourf(x.T, y.T, self.q.T, norm=log_norm, cmap=col_map, levels=75)
         plt.colorbar(cm.ScalarMappable(norm=log_norm, cmap=col_map), ax=plt.gca())
+        self.streamfunction(t)
+        self.velocity(t)
         plt.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplot_color)
         theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
         plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
@@ -421,7 +434,7 @@ class FluidStateTopography(FluidState):
         plt.title(f'Vorticity  |  t={simul.time:.3f}')
         plt.gca().set_aspect('equal')
         if print_fig:
-            plt.savefig(simul.frames_dir / f'{(t+t0):05}.png', dpi=200)
+            plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
         else:
             plt.show()
         plt.close()
@@ -581,7 +594,6 @@ def pseudo_laplacian2d(
 def autocorrelation(
     f: np.ndarray,  # field
 ):
-    import numpy.fft as ft
     f_T = ft.rfft2(f)
     return ft.irfft2(f_T * f_T.conjugate())
     
@@ -600,7 +612,7 @@ def measure_valley_dist(
     f: np.ndarray,  # field
     n: int,         # domain size
 ):
-    autocorrelation = autocorrelation(f)
+    C_self = autocorrelation(f)
     max_dist = int(np.round(n / np.sqrt(2)))
     C = np.zeros(max_dist + 1)
     count = np.zeros(max_dist + 1)
@@ -609,11 +621,10 @@ def measure_valley_dist(
         for y in range(n):
             dist = np.hypot(pbc_dist(x, n), pbc_dist(y, n)).round().astype(int)
             count[dist] += 1
-            C[dist] += autocorrelation[x, y]
+            C[dist] += C_self[x, y]
     C /= count * np.square(f).sum()
     dist = np.arange(max_dist + 1)
-    long_range_C = autocorrelation(f, n).sum(where=(dist > n/2)) / (max_dist - n/2)
-    return lrac
+    return C.sum(where=(dist > n/2)) / (max_dist - n/2)
 
 
 def measure_concentration(
@@ -622,8 +633,8 @@ def measure_concentration(
 ):
     f_flt = gaussian_filter(f, sigma=n/50, truncate=2., mode='wrap')
     L2_measure = np.square(f_flt).sum()
-    L1_measure = (np.abs(f_flt).sum())**2
-    concentration =  L2_measure / L1_measure * n**2
+    L1_measure = np.abs(f_flt).sum()
+    concentration =  L2_measure * n**2 / L1_measure**2
     return 1 - 1 / concentration
 
 
@@ -658,6 +669,78 @@ def avg_coord( # averaging in the square domain [a, b]^2
     avg_x = np.average(x[a:b, a:b], weights=f[a:b, a:b])
     avg_y = np.average(y[a:b, a:b], weights=f[a:b, a:b])
     return avg_x, avg_y
+
+
+def neighboring_clusters(
+    x: int,         # point coordinates
+    y: int,
+    f: np.ndarray,  # field
+    n: int,         # domain size
+):
+    neighbors = []
+    if x != 0:
+        c = f[x-1, y]
+        if c >= 0:
+            neighbors.append(c)
+    if y != 0:
+        c = f[x, y-1]
+        if c >= 0 and c not in neighbors:
+            neighbors.append(c)
+    if x == n-1:
+        c = f[0, y]
+        if c >= 0 and c not in neighbors:
+            neighbors.append(c)
+    if y == n-1:
+        c = f[x, 0]
+        if c >= 0 and c not in neighbors:
+            neighbors.append(c)
+    return sorted(neighbors)
+
+
+def cluster_ones(
+    f: np.ndarray,  # field
+    n: int,         # domain size
+):
+    cluster = []
+    f_c = -np.ones((n, n)).astype(int)
+    for x in range(n):
+        for y in range(n):
+            if f[x, y] == 1:
+                neighbors = neighboring_clusters(x, y, f_c, n)
+                if len(neighbors) == 0:
+                    f_c[x, y] = len(cluster)
+                    cluster.append([[x,y]])
+                else:
+                    f_c[x, y] = neighbors[0]
+                    cluster[neighbors[0]].append([x,y])
+                if len(neighbors) > 1:
+                    for i in range(1, len(neighbors)):
+                        for node in cluster[neighbors[i]]:
+                            f_c[tuple(node)] = neighbors[0]
+                        cluster[neighbors[0]].extend(cluster[neighbors[i]])
+                        del cluster[neighbors[i]]
+                        f_c[f_c > neighbors[i]] -= 1
+                        for j in range(i+1, len(neighbors)):
+                            neighbors[j] -= 1
+    return sorted(cluster, key=len, reverse=True)
+
+
+def largest_valley(
+    topography: np.ndarray,
+    n: int,     # domain size
+):
+    valley_thresh = 0.2 * topography.max() + 0.8 * topography.min()
+    valleys = np.where(topography < valley_thresh, np.ones((n, n)), np.zeros((n, n)))
+    cluster = cluster_ones(valleys, n)
+    rel_size = len(cluster[0]) / n**2
+    x_avg = y_avg = count = 0
+    for point in cluster[0]:
+        x_avg += point[0]
+        y_avg += point[1]
+        count += 1
+    x_avg /= count
+    y_avg /= count
+    print(f'The largest valley is located at ({y_avg:.1f}, {x_avg:.1f}) and fills about {rel_size*100:.1f}% of the domain.')
 
 
 def lamb_dipole(
