@@ -35,6 +35,7 @@ class FluidSimulator:
 
     def set_diagnostics(self):
         self.diagnostics = True
+        print(f'Running simulation "{self.cfg_name}"')
         self.frames_dir, self.bak_dir = self.setup_folders() # looking for past simulations backup files
         self.bak_file, self.t0 = self.find_highest_numbered_file()
         self.reload_bak = self.confirm_reload()
@@ -113,7 +114,6 @@ class FluidSimulator:
         self.d = self.Dt * self.alpha * self.ekman
         for i in range(3):
             self.L[i] = self.linear_sys_inv(self.c[i], self.d[i], self.N)
-        
 
     @staticmethod
     def linear_sys_inv(
@@ -139,7 +139,7 @@ class FluidSimulator:
                 Dt = self.Dt
             if Dt > self.Dx/10:
                 Dt = self.Dx/10
-            if (np.abs(Dt - self.Dt) / self.Dt > 10):
+            if (abs(Dt - self.Dt) / self.Dt > 10):
                 self.Dt = Dt
                 print(f'v({t}) <= {max_velocity:3e}\t->\tDt = {Dt}')
                 self.set_integration_const()
@@ -602,17 +602,14 @@ def pbc_dist(
     x: int, # position
     D: int, # domain size
 ):
-    if x <= D/2:
-        return x
-    else:
-        return D - x
+    return min(x, D-x)
 
 
 def measure_valley_dist(
-    f: np.ndarray,  # field
+    t: np.ndarray,  # topography
     n: int,         # domain size
 ):
-    C_self = autocorrelation(f)
+    C_self = autocorrelation(t)
     max_dist = int(np.round(n / np.sqrt(2)))
     C = np.zeros(max_dist + 1)
     count = np.zeros(max_dist + 1)
@@ -622,7 +619,7 @@ def measure_valley_dist(
             dist = np.hypot(pbc_dist(x, n), pbc_dist(y, n)).round().astype(int)
             count[dist] += 1
             C[dist] += C_self[x, y]
-    C /= count * np.square(f).sum()
+    C /= count * np.square(t).sum()
     dist = np.arange(max_dist + 1)
     return C.sum(where=(dist > n/2)) / (max_dist - n/2)
 
@@ -728,8 +725,9 @@ def cluster_ones(
 def largest_valley(
     topography: np.ndarray,
     n: int,     # domain size
+    threshold = 0.2,
 ):
-    valley_thresh = 0.2 * topography.max() + 0.8 * topography.min()
+    valley_thresh = threshold * topography.max() + (1 - threshold) * topography.min()
     valleys = np.where(topography < valley_thresh, np.ones((n, n)), np.zeros((n, n)))
     cluster = cluster_ones(valleys, n)
     rel_size = len(cluster[0]) / n**2
@@ -740,7 +738,37 @@ def largest_valley(
         count += 1
     x_avg /= count
     y_avg /= count
-    print(f'The largest valley is located at ({y_avg:.1f}, {x_avg:.1f}) and fills about {rel_size*100:.1f}% of the domain.')
+    # print(f'The largest valley is located at ({x_avg:.1f}, {y_avg:.1f}) and fills about {rel_size*100:.1f}% of the domain.')
+    return rel_size, (x_avg, y_avg)
+
+
+def optimal_rescale(f, g):
+    from scipy.optimize import minimize
+    def Q(alpha, f, g):
+        return np.square(g - alpha*f).sum()
+    def Q_Jac(alpha, f, g):
+        return (f * (alpha*f - g)).sum()
+    def Q_Hess(alpha, f, g):
+        return np.square(f).sum()
+    alpha0 = (g.max() / f.max() + g.min() / f.min()) / 2
+    result = minimize(fun=Q, jac=Q_Jac, hess=Q_Hess, x0=alpha0, args=(f, g), method='Newton-CG')
+    if result['success'] is True:
+        return result['x']
+    else:
+        return None
+
+
+def state_diff(f, g):
+    if (f * g).sum() < 0:
+        g = -g
+    alpha = optimal_rescale(f, g)
+    if alpha is not None:
+        print(f'The relative difference between states is {abs(alpha*f - g).sum() / abs(g).sum()}.')
+        plt.contourf(alpha*f.T - g.T, levels=50)
+        plt.colorbar()
+        plt.show()
+    else:
+        print('Error: could not compare states.')
 
 
 def lamb_dipole(
