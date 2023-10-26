@@ -35,8 +35,8 @@ def random_topography(
     topography = np.zeros((n, n))
     for i in range(peaks):
         ctr = 2*np.pi * np.random.rand(2)
-        fatness = 2 * np.random.rand()
         height = np.random.rand()
+        fatness = 2 * height * (1.5 * np.random.rand() + 0.25)
         sign = [-1, 1][np.random.randint(2)]
         dist, _ = po.relative_pos(*ctr, Dx, n)
         topography += sign * height * np.exp(-(dist/fatness)**2)
@@ -48,25 +48,27 @@ def square_wells_topography(
     n: int,     # grid size
     sigma = None,  # mount width
 ):
+    ctr = np.array(((np.pi/2, np.pi/2), (np.pi/2, 3*np.pi/2), (3*np.pi/2, np.pi/2), (3*np.pi/2, 3*np.pi/2)))
     if sigma is None:
         sigma = 2*np.pi / 5
-    topography = np.zeros((n, n))
-    ctr = np.array(((np.pi/2, np.pi/2), (np.pi/2, 3*np.pi/2), (3*np.pi/2, np.pi/2), (3*np.pi/2, 3*np.pi/2)))
     sign = (+1, -1, -1, +1)
+    topography = np.zeros((n, n))
     for i in range(4):
-        dist, _ = relative_pos(*ctr[i], Dx, n)
+        dist, _ = po.relative_pos(*ctr[i], Dx, n)
         topography += sign[i] * np.exp(-dist**2 / (2*sigma**2))
     max_heigth = np.max(topography)
     return topography/max_heigth
 
 def main():
     analize_vortex = False
-    # simul = po.FluidSimulator(po.random_forcing, analize_vortex)
-    simul = po.FluidSimulator(po.zero_forcing, analize_vortex)
+    simul = po.FluidSimulator(po.random_forcing, analize_vortex)
+    # simul = po.FluidSimulator(po.zero_forcing, analize_vortex)
     simul.set_diagnostics()
-    topography = gauss_topography(simul.Dx, simul.N)
-    # topography = random_topography(20, simul.Dx, simul.N)
+    # topography = square_wells_topography(simul.Dx, simul.N)
+    # topography = gauss_topography(simul.Dx, simul.N)
+    topography = random_topography(30, simul.Dx, simul.N)
     fluid = po.FluidStateTopography(topography, simul.reload_bak, simul.bak_dir, simul.bak_file)
+    print(f'LDA measure of topography: {po.measure_valley_dist(fluid.topography - fluid.topography.max(), fluid.N)}')
     simul.set_physical_param(fluid)
     for t in simul.time_exec:
         simul.advance_dt(fluid, t)
