@@ -37,7 +37,7 @@ class FluidSimulator:
         self.diagnostics = True
         print(f'Running simulation "{self.cfg_name}"')
         self.frames_dir, self.bak_dir = self.setup_folders() # looking for past simulations backup files
-        self.bak_file, self.t0 = self.find_highest_numbered_file()
+        self.bak_file, self.t0 = find_highest_numbered_npz(self.bak_dir)
         self.reload_bak = self.confirm_reload()
         open_folder(self.bak_dir, overwrite = not self.reload_bak)
         open_folder(self.frames_dir, overwrite = not self.reload_bak)
@@ -64,21 +64,6 @@ class FluidSimulator:
         bak_dir = result_dir / fold_name
         frames_dir = bak_dir / f'frames'
         return frames_dir, bak_dir
-
-    def find_highest_numbered_file(self):
-        max_number = -1
-        max_file = None
-        for file in self.bak_dir.glob('q_*.npz'):
-            try:
-                file_number = int(file.stem[2:])
-            except ValueError:
-                print(f'<{filename}.npz> does not have a valid name.')
-                pass
-            else:
-                if file_number > max_number:
-                    max_number = file_number
-                    max_file = file.name
-        return max_file, max_number
 
     def confirm_reload(self):   # returns the answer to "Restart past simulation?"
         if self.bak_file:   # asking user confirmation to reload last simulation (default)
@@ -788,6 +773,24 @@ def lamb_dipole(
     dipole = C_L * sp.j1(K*dist2ctr) * np.sin(angle - orient)
     dipole[dist2ctr > radius] = 0
     return dipole
+
+
+def find_highest_numbered_npz(
+    directory,
+):
+    max_number = -1
+    max_file = None
+    for file in directory.glob('q_*.npz'):
+        try:
+            file_number = int(file.stem[2:])
+        except ValueError:
+            print(f'<{filename}.npz> does not have a valid name.')
+            pass
+        else:
+            if file_number > max_number:
+                max_number = file_number
+                max_file = file.name
+    return max_file, max_number
 
 
 def open_folder(
