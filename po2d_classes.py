@@ -136,12 +136,13 @@ class FluidSimulator:
             self.bkgnd_sum = self.bkgnd_sum + fluid.avg_centered_field(self.bins) + (-fluid).avg_centered_field(self.bins)
         if (t % self.T_update) == 0:
             E = fluid.energy()
-            E_in = fluid.energy_input_rate(self.F)
-            S = spectrum(fluid.q, self.N)
+            eps = fluid.energy_dissipation(self.Re)
+            # E_in = fluid.energy_input(self.F)
+            S = energy_spectrum(*fluid.velocity(t))
             avg_k = np.average(np.arange(S.size), weights=S)
-            self.time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {E_in:.5g} ')
+            self.time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {eps:.5g} ')
             if self.diagnostics:
-                print(self.time, E, E_in*self.Dt*self.T_update, avg_k, measure_concentration(fluid.q, self.N), sep='\t', file=self.stat_file, flush=True)
+                print(self.time, E, eps, avg_k, measure_concentration(fluid.q, self.N), sep='\t', file=self.stat_file, flush=True)
         if (t % self.T_print) == 0:
             if self.diagnostics:
                 np.savez(self.bak_dir / f'q_{(t+self.t0):06}', q=fluid.q, t=self.time)
@@ -215,6 +216,7 @@ class FluidState:
     ):
         if self.t_vel != t:
             self.t_vel = t
+            self.streamfunction(t)
             self.v_x = derivative(self.psi, 1, self.Dx)  # d(psi)/dy
             self.v_y = -derivative(self.psi, 0, self.Dx) # -d(psi)/dx
         return self.v_x, self.v_y
@@ -222,7 +224,14 @@ class FluidState:
     def energy(self):
         return np.sum(self.q * self.psi / 2)
 
-    def energy_input_rate(
+    def energy_dissipation(
+        self,
+        Re: float,
+    ):
+        velocity_gradient = self.q * self.h
+        return np.square(velocity_gradient).sum() / Re
+
+    def energy_input(
         self,
         F: np.ndarray,
     ):
@@ -279,11 +288,12 @@ class FluidState:
         self.velocity(t)
         plt.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplot_color)
         theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
-        plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
-        plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
+        labels = ['$0$', '$\pi/2$', '$\pi$', '$3\pi/2$', '$2\pi$']
+        plt.xticks(theta, labels)
+        plt.yticks(theta, labels)
         plt.xlim(0, (self.N-1) * self.Dx)
         plt.ylim(0, (self.N-1) * self.Dx)
-        plt.title(f'Vorticity  |  t={simul.time:.3f}')
+        plt.title(f'Vorticity  $|$  t={simul.time:.3f}')
         plt.gca().set_aspect('equal')
         if print_fig:
             plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
@@ -412,11 +422,12 @@ class FluidStateTopography(FluidState):
         self.velocity(t)
         plt.streamplot(x.T, y.T, self.v_x.T, self.v_y.T, color=streamplot_color)
         theta = np.linspace(0, (self.N-1) * self.Dx, num=5)
-        plt.xticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
-        plt.yticks(theta, ['0', 'π/2', 'π', '3π/2', '2π'])
+        labels = ['$0$', '$\pi/2$', '$\pi$', '$3\pi/2$', '$2\pi$']
+        plt.xticks(theta, labels)
+        plt.yticks(theta, labels)
         plt.xlim(0, (self.N-1) * self.Dx)
         plt.ylim(0, (self.N-1) * self.Dx)
-        plt.title(f'Vorticity  |  t={simul.time:.3f}')
+        plt.title(f'Vorticity  $|$  t={simul.time:.3f}')
         plt.gca().set_aspect('equal')
         if print_fig:
             plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
@@ -450,14 +461,15 @@ class FluidStateTopography(FluidState):
 
 
 
-def spectrum(
-    f: np.ndarray,
-    n: int,     # grid size
+def energy_spectrum(
+    v_x: np.ndarray,
+    v_y: np.ndarray,
 ):
-    f_ft = ft.rfft2(f)
+    n = v_x.shape[0]
+    vt_square = np.abs(ft.rfft2(v_x))**2 + np.abs(ft.rfft2(v_y))**2
     k = modulus_k(n)
     k_range = np.floor((int(n/2) + 1) * np.sqrt(2))
-    spectrum, _, _ = binned_statistic(k.flatten(), np.abs(f_ft).flatten(), statistic='mean', bins=np.arange(k_range+1))
+    spectrum, _, _ = binned_statistic(k.flatten(), vt_square.flatten(), statistic='mean', bins=np.arange(k_range+1))
     return 2*np.pi * np.arange(k_range) * spectrum
 
 
@@ -465,8 +477,8 @@ def random_forcing(
     n: int,     # grid size
 ):
     strength = 1e+7
-    # k_F = n * 25/128
-    k_F = n / 8
+    k_F = n * 25/128
+    # k_F = n / 8
     power_spectrum = forcing_spectrum(strength, k_F, n)
     random_phase = np.random.rand(n, int(n/2)+1)
     F_ft = power_spectrum * np.exp(2j*np.pi * random_phase)
