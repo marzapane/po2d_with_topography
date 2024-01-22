@@ -139,7 +139,7 @@ class FluidSimulator:
             eps = fluid.energy_dissipation(self.Re)
             # E_in = fluid.energy_input(self.F)
             S = energy_spectrum(*fluid.velocity(t))
-            avg_k = np.average(np.arange(S.size), weights=S)
+            avg_k = np.average(np.arange(S.size), weights=S) if S.any() else 0.0
             self.time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {eps:.5g} ')
             if self.diagnostics:
                 print(self.time, E, eps, avg_k, measure_concentration(fluid.q, self.N), sep='\t', file=self.stat_file, flush=True)
@@ -159,7 +159,7 @@ class FluidSimulator:
         self.F = self.forcing(self.N)
         J_p = fluid.J.copy()
         fluid.arakawa_jacobian(t)
-        rhs = self.Dt* (self.gamma[step]*(self.F - fluid.J) + self.rho[step]*(F_p - J_p)) - self.d[step]*fluid.q + self.c[step]*pseudo_laplacian2d(fluid.q)
+        rhs = self.Dt* (self.gamma[step]*(self.F - fluid.J) + self.rho[step]*(F_p - J_p)) - self.d[step]*fluid.q + self.c[step]*pseudo_laplacian2d(fluid.q*fluid.h)
         middle_step = np.matmul(self.L[step], rhs)
         Dq = np.matmul(middle_step, self.L[step].transpose())
         fluid.q = fluid.q + Dq
@@ -389,7 +389,7 @@ class FluidStateTopography(FluidState):
                 topography_file = bak_dir / 'topography.npy'
                 if not topography_file.is_file():
                     np.save(topography_file, topography)
-        self.h = 1 - 0.9 * self.topography
+        self.h = 1 - 0.2 * self.topography
         super().__init__(reload_bak, bak_dir, bak_file, vorticity)
 
     def streamfunction(
