@@ -83,12 +83,13 @@ class FluidSimulator:
     def set_physical_param(self, fluid):
         self.set_integration_const()
         if self.adapt_Dt:
-            self.max_CFL = np.sqrt(3)/1000
+            self.max_CFL = np.sqrt(3)  # for 3rd order Runge-Kutta
+            self.cur_CFL = 1
         revol_time = pow(self.sd_len**2/(2*self.eps), 1/3)
-        self.T_print = min(int(revol_time/self.Dt) * 10, int(self.T/5))
-        # self.T_print = min(10*int(revol_time/self.Dt), int(self.T/5))
+        self.T_print = 0
+        self.dT_print = min(int(revol_time/self.Dt), int(self.T/5))
         self.T_update = max(10, int(self.T/1000))
-        print(f'Simulation times are:\n  Dt = {self.Dt}\n  T_LE ~ {revol_time}')
+        # print(f'Simulation times are:\n  Dt = {self.Dt}\n  T_LE ~ {revol_time}')
         self.time_exec = tqdm(np.arange(self.T+1))
         self.F = self.forcing(self.N)
         fluid.psi = fluid.streamfunction(self.t0)
@@ -115,39 +116,39 @@ class FluidSimulator:
         fluid,
         t: int,
     ):
-        if self.adapt_Dt:
-            fluid.velocity(t)
-            max_velocity = np.hypot(fluid.v_x, fluid.v_y).max()
-            if max_velocity > 0:
-                Dt = self.max_CFL * self.Dx / max_velocity
-            else:
-                Dt = self.Dt
-            if Dt > self.Dx/10:
-                Dt = self.Dx/10
-            if (abs(Dt - self.Dt) / self.Dt > 10):
-                self.Dt = Dt
-                print(f'v({t}) <= {max_velocity:3e}\t->\tDt = {Dt}')
-                self.set_integration_const()
         for step in range(3):
             self.rungekutta_step(fluid, step, t)
         self.time += self.Dt
-        if self.analize_vortex:
-            fluid.velocity(t)
-            self.bkgnd_sum = self.bkgnd_sum + fluid.avg_centered_field(self.bins) + (-fluid).avg_centered_field(self.bins)
         if (t % self.T_update) == 0:
             E = fluid.energy()
             eps = fluid.energy_dissipation(self.Re)
+            revol_time = pow(self.sd_len**2/(2*eps), 1/3)
+            self.dT_print = min(int(revol_time/self.Dt), int(self.T/5))
             # E_in = fluid.energy_input(self.F)
             S = energy_spectrum(*fluid.velocity(t))
             avg_k = np.average(np.arange(S.size), weights=S) if S.any() else 0.0
-            self.time_exec.set_description(f'E = {E:.5g}  |  <k> = {avg_k:.5g}  |  eps = {eps:.5g} ')
+            self.time_exec.set_description(f't = {self.time:.1f} | E = {E:.2g} | <k> = {avg_k:.2g} | eps = {eps:.2g}')
             if self.diagnostics:
                 print(self.time, E, eps, avg_k, measure_concentration(fluid.q, self.N), sep='\t', file=self.stat_file, flush=True)
-        if (t % self.T_print) == 0:
+            if self.adapt_Dt:
+                fluid.velocity(t)
+                max_velocity = np.hypot(fluid.v_x, fluid.v_y).max()
+                line_Dt = (self.cur_CFL * self.Dx / max_velocity / 10) if (max_velocity > 0) else self.Dt
+                turb_Dt = revol_time/np.sqrt(self.Re)
+                Dt = min(line_Dt, turb_Dt, 50) / 4
+                if abs(Dt - self.Dt) > self.Dt / 5:
+                    self.Dt = Dt
+                    print(f'    !!  v({t})<{max_velocity:.3g}  &  T_rev={revol_time:.1f}   ->   Dt = {self.Dt:.2g}')
+                    self.set_integration_const()
+        if t >= self.T_print + self.dT_print:
+            self.T_print = t
             if self.diagnostics:
                 np.savez(self.bak_dir / f'q_{(t+self.t0):06}', q=fluid.q, t=self.time)
             if self.plot_flag:
-                fluid.plot_field(self, t, print_fig=self.diagnostics)
+                fluid.plot_field(t, self, print_fig=self.diagnostics)
+        if self.analize_vortex:
+            fluid.velocity(t)
+            self.bkgnd_sum = self.bkgnd_sum + fluid.avg_centered_field(self.bins) + (-fluid).avg_centered_field(self.bins)
 
     def rungekutta_step(
         self,
@@ -271,8 +272,8 @@ class FluidState:
 
     def plot_field(
         self,
-        simul,
         t: int,
+        simul = None,
         print_fig = True,
     ):
         lim = max(abs(np.min(self.q)), abs(np.max(self.q)))
@@ -293,9 +294,10 @@ class FluidState:
         plt.yticks(theta, labels)
         plt.xlim(0, (self.N-1) * self.Dx)
         plt.ylim(0, (self.N-1) * self.Dx)
-        plt.title(f'Vorticity  $|$  t={simul.time:.3f}')
+        if simul:
+            plt.title(f'Vorticity  $|$  t={simul.time:.3f}')
         plt.gca().set_aspect('equal')
-        if print_fig:
+        if print_fig and simul:
             plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
         else:
             plt.show()
@@ -389,7 +391,7 @@ class FluidStateTopography(FluidState):
                 topography_file = bak_dir / 'topography.npy'
                 if not topography_file.is_file():
                     np.save(topography_file, topography)
-        self.h = 1 - 0.2 * self.topography
+        self.h = 1 - 2/3 * self.topography/self.topography.max()
         super().__init__(reload_bak, bak_dir, bak_file, vorticity)
 
     def streamfunction(
@@ -403,8 +405,8 @@ class FluidStateTopography(FluidState):
     
     def plot_field(
         self,
-        simul,
         t: int,
+        simul = None,
         print_fig = True,
     ):
         # plt.contourf(self.v_x); plt.colorbar(); plt.show(); plt.close()
@@ -427,9 +429,10 @@ class FluidStateTopography(FluidState):
         plt.yticks(theta, labels)
         plt.xlim(0, (self.N-1) * self.Dx)
         plt.ylim(0, (self.N-1) * self.Dx)
-        plt.title(f'Vorticity  $|$  t={simul.time:.3f}')
+        if simul is not None:
+            plt.title(f'Vorticity  $|$  t={simul.time:.3f}')
         plt.gca().set_aspect('equal')
-        if print_fig:
+        if print_fig and simul:
             plt.savefig(simul.frames_dir / f'{(t+simul.t0):05}.png', dpi=200)
         else:
             plt.show()
@@ -521,20 +524,28 @@ def eig_function(
     n: int,         # grid size
 ):
     from scipy.sparse.linalg import eigs
-    q_of_psi = laplacian_matrix(n) / h.flatten()
-    eigs, eigv = eigs(q_of_psi, 64, sigma=0)
+    q_of_psi = (laplacian_matrix(n) / h.flatten()).T
+    e, ev = eigs(q_of_psi, 64, which='SM', tol=0, maxiter=1e14)
     del(q_of_psi)
-    return eigs, eigv
+    return e, ev
 
 
 # @cache
+# def laplacian_matrix(
+#     n: int, # grid size
+# ):
+#     laplacian_1d = 2 * np.eye(n) - np.diag(np.ones(n-1), 1) - np.diag(np.ones(n-1), -1) - np.diag(np.ones(1), n-1) - np.diag(np.ones(1), 1-n)
+#     laplacian_2d = np.kron(laplacian_1d, np.eye(n)) + np.kron(np.eye(n), laplacian_1d) 
+#     return laplacian_2d
+
+
 def laplacian_matrix(
     n: int, # grid size
 ):
-    n2 = n*n
-    laplacian = 4 * np.eye(n2) - np.diag(np.ones(n2-1), 1) - np.diag(np.ones(n2-1), -1) - np.diag(np.ones(n2-n), n) - np.diag(np.ones(n2-n), -n) - np.diag(np.ones(n), n2-n) - np.diag(np.ones(n), n-n2)
-    laplacian[0, n2-1] = laplacian[n2-1, 0] = -1
-    return laplacian
+    import scipy.sparse as sp
+    laplacian_1d = sp.diags_array([2] + [-1]*4, offsets=[0, 1, -1, n-1, 1-n], shape=(n, n))
+    laplacian_2d = sp.kron(laplacian_1d, sp.eye(n)) + sp.kron(sp.eye(n), laplacian_1d)
+    return laplacian_2d
 
 
 def relative_pos(
@@ -785,6 +796,66 @@ def lamb_dipole(
     dipole = C_L * sp.j1(K*dist2ctr) * np.sin(angle - orient)
     dipole[dist2ctr > radius] = 0
     return dipole
+
+
+def gauss_topography(
+    Dx: float,  # grid spacing
+    n: int,     # grid size
+    sigma = None,  # mount width
+):
+    ctr = int(n-1)/2 * Dx
+    if sigma is None:
+        sigma = 2*np.pi / 10
+    dist, _ = po.relative_pos(ctr, ctr, Dx, n)
+    return np.exp(-dist**2 / (2 * sigma**2))
+
+
+def diag_ridge_topography(
+    Dx: float,  # grid spacing
+    n: int,     # grid size
+    sigma = None,  # mount width
+):
+    sd_len = n * Dx
+    pos = np.arange(n) * Dx
+    xy_diff = np.abs(pos[:, None] - pos[None, :])
+    dist2diag = np.where(xy_diff < sd_len/2, xy_diff, sd_len - xy_diff) / np.sqrt(2)
+    if sigma is None:
+        sigma = 2*np.pi / 10
+    return np.exp(-dist2diag**2 / (2 * sigma**2))
+
+
+def random_topography(
+    peaks: int, # number of peaks
+    Dx: float,  # grid spacing
+    n: int,     # grid size
+):
+    topography = np.zeros((n, n))
+    for i in range(peaks):
+        ctr = 2*np.pi * np.random.rand(2)
+        height = np.random.rand()
+        fatness = 2 * height * (1.5 * np.random.rand() + 0.25)
+        sign = [-1, 1][np.random.randint(2)]
+        dist, _ = po.relative_pos(*ctr, Dx, n)
+        topography += sign * height * np.exp(-(dist/fatness)**2)
+    max_heigth = np.max(topography)
+    return topography/max_heigth
+
+
+def square_wells_topography(
+    Dx: float,  # grid spacing
+    n: int,     # grid size
+    sigma = None,  # mount width
+):
+    ctr = np.array(((np.pi/2, np.pi/2), (np.pi/2, 3*np.pi/2), (3*np.pi/2, np.pi/2), (3*np.pi/2, 3*np.pi/2)))
+    if sigma is None:
+        sigma = 2*np.pi / 5
+    sign = (+1, -1, -1, +1)
+    topography = np.zeros((n, n))
+    for i in range(4):
+        dist, _ = po.relative_pos(*ctr[i], Dx, n)
+        topography += sign[i] * np.exp(-dist**2 / (2*sigma**2))
+    max_heigth = np.max(topography)
+    return topography/max_heigth
 
 
 def find_highest_numbered_npz(
